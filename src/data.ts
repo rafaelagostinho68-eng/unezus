@@ -150,7 +150,7 @@ export const teachers: Teacher[] = [
     crm: 'CRM 18427-CE',
     bio: 'Mestre, Doutor e Pós-Doutor pela USP, presidente da APBUS, membro da Academia Brasileira de Ultrassonografia e referência nacional em ultrassonografia.',
     avatar: 'AG',
-    photo: 'https://unezus.com.br/wp-content/uploads/2025/05/1-6.png',
+    photo: '/people/antonio-gadelha.png',
     lattes: 'http://lattes.cnpq.br/0388242608904648',
     credentials: [
       'Mestre, Doutor e Pós-Doutor pela USP',
@@ -168,7 +168,7 @@ export const teachers: Teacher[] = [
     crm: 'CRM 19206-CE',
     bio: 'Mestre e Doutora pela USP, referência em ultrassonografia ginecológica, obstétrica e medicina fetal, com atuação científica na APBUS.',
     avatar: 'PG',
-    photo: 'https://unezus.com.br/wp-content/uploads/2025/05/2-6.png',
+    photo: '/people/patricia-gadelha.png',
     lattes: 'https://lattes.cnpq.br/1196217025300715',
     credentials: [
       'Mestre e Doutora pela USP',

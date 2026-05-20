@@ -35,8 +35,8 @@ type IconType = React.ComponentType<{ className?: string }>
 const iconSet = Icons as unknown as Record<string, IconType>
 
 const storagePrefix = 'unezus-academy-preview'
-const unezusSymbolUrl = 'https://unezus.com.br/wp-content/webp-express/webp-images/uploads/2025/02/unezus_transparente_01.png.webp'
-const unezusWordmarkUrl = 'https://unezus.com.br/wp-content/uploads/2025/02/Group-77-1.webp'
+const unezusSymbolUrl = '/brand/unezus-site-symbol.png'
+const unezusWordmarkUrl = '/brand/unezus-site-wordmark.png'
 
 const lessonStatusLabels: Record<LessonStatus, string> = {
   novo: 'Novo',
@@ -410,6 +410,59 @@ function MedicalThumb({ tone = 'doppler', label }: { tone?: string; label?: stri
   )
 }
 
+function LessonCover({
+  lesson,
+  eyebrow,
+  subtitle,
+  compact = false,
+}: {
+  lesson: Lesson
+  eyebrow?: string
+  subtitle?: string
+  compact?: boolean
+}) {
+  const youtubeId = getYouTubeId(lesson.videoUrl)
+  const previewImage = youtubeId ? `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg` : ''
+  const sourceLabel = lesson.videoSource === 'youtube' ? 'Replay' : lesson.videoSource === 'upload' ? 'Upload' : 'Preview'
+
+  return (
+    <div className="relative h-full overflow-hidden rounded-xl bg-slate-950">
+      <MedicalThumb tone={lesson.thumbnail} label="" />
+      {previewImage ? (
+        <div
+          className="absolute inset-0 bg-cover bg-center opacity-70 mix-blend-screen"
+          style={{ backgroundImage: `url(${previewImage})` }}
+        />
+      ) : null}
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(103,232,249,0.28),transparent_28%),linear-gradient(180deg,rgba(2,6,23,0.08)_0%,rgba(2,6,23,0.82)_72%,rgba(2,6,23,0.95)_100%)]" />
+      <div className="absolute inset-0 opacity-30 [background-image:linear-gradient(rgba(255,255,255,.07)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.07)_1px,transparent_1px)] [background-size:18px_18px]" />
+
+      <div className="absolute left-3 top-3 right-3 flex items-start justify-between gap-2">
+        <span className="inline-flex max-w-[70%] items-center rounded-full bg-white/16 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-white ring-1 ring-white/18 backdrop-blur">
+          {eyebrow ?? 'UNEZUS Academy'}
+        </span>
+        <span className="inline-flex items-center rounded-full bg-slate-950/55 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-white/88 ring-1 ring-white/12 backdrop-blur">
+          {sourceLabel}
+        </span>
+      </div>
+
+      <div className="absolute bottom-0 left-0 right-0 p-3">
+        <div className="flex items-end justify-between gap-3">
+          <div className="min-w-0">
+            <p className={clsx('font-black leading-tight text-white drop-shadow-sm', compact ? 'line-clamp-2 text-sm' : 'line-clamp-2 text-base')}>
+              {lesson.title}
+            </p>
+            {subtitle ? <p className="mt-1 line-clamp-1 text-[11px] font-semibold text-white/72">{subtitle}</p> : null}
+          </div>
+          <span className={clsx('grid shrink-0 place-items-center rounded-full bg-white/18 text-white ring-1 ring-white/22 backdrop-blur', compact ? 'h-10 w-10' : 'h-12 w-12')}>
+            <Icons.Play className={clsx('fill-current', compact ? 'h-4 w-4' : 'h-5 w-5')} />
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function getYouTubeId(url?: string) {
   if (!url) return null
   const patterns = [
@@ -485,7 +538,7 @@ function LessonVideoPlayer({ lesson, progress }: { lesson: Lesson; progress: num
 
   return (
     <div className="relative aspect-video">
-      <MedicalThumb tone={lesson.thumbnail} label={lesson.title} />
+      <LessonCover lesson={lesson} />
       <div className="absolute inset-0 grid place-items-center bg-slate-950/18">
         <button className="grid h-20 w-20 place-items-center rounded-full bg-white/92 text-sky-950 shadow-2xl shadow-black/25">
           <Icons.Play className="h-8 w-8 fill-current" />
@@ -534,7 +587,12 @@ function LessonCard({ lesson, compact = false }: { lesson: Lesson; compact?: boo
       )}
     >
       <div className={clsx(compact ? 'h-36' : 'h-44', 'relative')}>
-        <MedicalThumb tone={lesson.thumbnail} label={specialty.name} />
+        <LessonCover
+          lesson={lesson}
+          eyebrow={specialty.name}
+          subtitle={`${teacher.name.replace('Profª ', '').replace('Prof. ', '')} · ${lesson.duration}`}
+          compact={compact}
+        />
         {locked && (
           <div className="absolute inset-0 flex items-start justify-between bg-slate-950/42 p-4">
             <span className="inline-flex items-center gap-2 rounded-full bg-white/95 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.14em] text-slate-900">
@@ -1057,7 +1115,12 @@ function LandingPage() {
                   <div className="grid gap-4 p-5">
                     {initialLessons.slice(0, 3).map((lesson) => (
                       <div key={lesson.id} className="grid grid-cols-[112px_1fr] gap-4 rounded-2xl border border-slate-200 bg-white p-3">
-                        <MedicalThumb tone={lesson.thumbnail} label="Aula" />
+                        <LessonCover
+                          lesson={lesson}
+                          eyebrow={lesson.module}
+                          subtitle={getTeacher(lesson.teacherId, initialTeachers).name.replace('Profª ', '').replace('Prof. ', '')}
+                          compact
+                        />
                         <div className="self-center">
                           <p className="text-sm font-black text-slate-950">{lesson.title}</p>
                           <p className="mt-1 text-xs font-semibold text-slate-500">{lesson.duration} · {lesson.module}</p>
