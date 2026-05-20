@@ -1,10 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { HashRouter, Link, Navigate, NavLink, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import * as Icons from 'lucide-react'
 import clsx from 'clsx'
 import {
   adminAiActions,
+  type AccessAudience,
+  type AccessMode,
   calendarEvents as initialCalendarEvents,
   caseStudies as initialCaseStudies,
   certificates as initialCertificates,
@@ -22,6 +24,7 @@ import {
   type Lesson,
   type LessonComment,
   type LessonStatus,
+  type Material,
   type ReportTemplate,
   type Specialty,
   type Student,
@@ -59,6 +62,18 @@ const eventTypes: CalendarEvent['type'][] = [
   'Prova/simulado',
   'Prazo de certificado',
 ]
+
+const accessModeLabels: Record<AccessMode | 'herdar', string> = {
+  herdar: 'Seguir especialidade',
+  gratuita: 'Gratuita',
+  inclusa: 'Inclusa no plano',
+  avulsa: 'Compra avulsa',
+}
+
+const accessAudienceLabels: Record<AccessAudience, string> = {
+  todos: 'Todos os cadastrados',
+  pagantes: 'Somente alunos pagantes',
+}
 
 const reportCategories = ['Abdome total', 'Tireoide', 'Mama', 'Obstétrico', 'Doppler', 'Pélvico', 'Partes moles']
 
@@ -134,6 +149,78 @@ function getDateDistance(date: string) {
   return Math.round((target - today) / 86400000)
 }
 
+function getOrderedSpecialties(specialties: Specialty[]) {
+  return [...specialties].sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
+}
+
+function normalizeSpecialtyAccess(specialty: Specialty): Specialty {
+  return {
+    ...specialty,
+    accessMode: specialty.accessMode ?? 'inclusa',
+    accessAudience: specialty.accessAudience ?? 'pagantes',
+    accessPrice: specialty.accessPrice ?? '',
+  }
+}
+
+function normalizeLessonAccess(lesson: Lesson): Lesson {
+  return {
+    ...lesson,
+    accessMode: lesson.accessMode ?? 'herdar',
+    accessAudience: lesson.accessAudience ?? 'pagantes',
+    accessPrice: lesson.accessPrice ?? '',
+  }
+}
+
+function reorderSpecialties(specialties: Specialty[], specialtyId: string, direction: 'up' | 'down') {
+  const ordered = getOrderedSpecialties(specialties)
+  const index = ordered.findIndex((item) => item.id === specialtyId)
+  if (index < 0) return specialties
+  const targetIndex = direction === 'up' ? index - 1 : index + 1
+  if (targetIndex < 0 || targetIndex >= ordered.length) return specialties
+  const next = [...ordered]
+  const [moved] = next.splice(index, 1)
+  next.splice(targetIndex, 0, moved)
+  return next.map((item, itemIndex) => ({ ...item, order: itemIndex + 1 }))
+}
+
+function placeSpecialtyAtOrder(specialties: Specialty[], specialtyId: string, nextOrder: number) {
+  const ordered = getOrderedSpecialties(specialties)
+  const index = ordered.findIndex((item) => item.id === specialtyId)
+  if (index < 0) return specialties
+  const boundedIndex = Math.max(0, Math.min(ordered.length - 1, nextOrder - 1))
+  const next = [...ordered]
+  const [moved] = next.splice(index, 1)
+  next.splice(boundedIndex, 0, moved)
+  return next.map((item, itemIndex) => ({ ...item, order: itemIndex + 1 }))
+}
+
+function getSpecialtyAccessSummary(specialty: Specialty) {
+  const accessMode = specialty.accessMode ?? 'inclusa'
+  const audience = specialty.accessAudience ?? 'pagantes'
+  if (accessMode === 'gratuita') return `Acesso gratuito · ${accessAudienceLabels[audience]}`
+  if (accessMode === 'avulsa') return `Compra avulsa${specialty.accessPrice ? ` · ${specialty.accessPrice}` : ''}`
+  return `Inclusa no plano · ${accessAudienceLabels[audience]}`
+}
+
+function resolveLessonAccess(lesson: Lesson, specialties: Specialty[]) {
+  const specialty = getSpecialty(lesson.specialtySlug, specialties)
+  const specialtyMode = specialty.accessMode ?? 'inclusa'
+  const specialtyAudience = specialty.accessAudience ?? 'pagantes'
+  const specialtyPrice = specialty.accessPrice ?? ''
+  return {
+    mode: lesson.accessMode && lesson.accessMode !== 'herdar' ? lesson.accessMode : specialtyMode,
+    audience: lesson.accessMode && lesson.accessMode !== 'herdar' ? lesson.accessAudience ?? specialtyAudience : specialtyAudience,
+    price: lesson.accessMode && lesson.accessMode !== 'herdar' ? lesson.accessPrice ?? '' : specialtyPrice,
+  }
+}
+
+function getLessonAccessSummary(lesson: Lesson, specialties: Specialty[]) {
+  const resolved = resolveLessonAccess(lesson, specialties)
+  if (resolved.mode === 'gratuita') return `Gratuita · ${accessAudienceLabels[resolved.audience]}`
+  if (resolved.mode === 'avulsa') return `Compra avulsa${resolved.price ? ` · ${resolved.price}` : ''}`
+  return `Inclusa no plano · ${accessAudienceLabels[resolved.audience]}`
+}
+
 function isLessonReleased(lesson: Lesson) {
   return lesson.adminStatus === 'publicada' && lesson.releaseDate <= getTodayKey()
 }
@@ -170,6 +257,13 @@ function IconByName({ name, className }: { name: string; className?: string }) {
 }
 
 const benefitIconNames = ['MonitorPlay', 'FileSearch', 'FileText', 'CalendarDays', 'Download', 'MessageCircle']
+const retiredTeacherIds = new Set(['fabio-magalhaes', 'sofia-cartacho', 'rafael-lima', 'marina-costa'])
+const retiredTeacherReplacement: Record<string, string> = {
+  'fabio-magalhaes': 'guilherme-porto',
+  'sofia-cartacho': 'isaac-newton-guimaraes',
+  'rafael-lima': 'armando-mendes',
+  'marina-costa': 'melissa-diesel',
+}
 
 function getTeacher(teacherId: string, teachers: Teacher[]) {
   return teachers.find((teacher) => teacher.id === teacherId) ?? teachers[0]
@@ -247,12 +341,19 @@ function DataProvider({ children }: { children: ReactNode }) {
     setLessons((current) =>
       current.map((lesson) => {
         const seeded = initialLessons.find((item) => item.id === lesson.id)
-        if (!seeded) return lesson
-        return {
+        if (!seeded) {
+          return normalizeLessonAccess({
+            ...lesson,
+            teacherId: retiredTeacherReplacement[lesson.teacherId] ?? lesson.teacherId,
+          })
+        }
+        return normalizeLessonAccess({
           ...lesson,
+          teacherId: retiredTeacherReplacement[lesson.teacherId] ?? lesson.teacherId,
           videoSource: lesson.videoSource ?? seeded.videoSource ?? (getYouTubeId(seeded.videoUrl ?? lesson.videoUrl) ? 'youtube' : 'placeholder'),
           videoUrl: lesson.videoSource === 'upload' ? '' : lesson.videoUrl ?? seeded.videoUrl,
-        }
+          coverImage: lesson.coverImage ?? seeded.coverImage,
+        })
       }),
     )
     setCertificates((current) =>
@@ -262,20 +363,44 @@ function DataProvider({ children }: { children: ReactNode }) {
       }),
     )
     setTeachers((current) =>
-      current.map((teacher) => {
-        const seeded = initialTeachers.find((item) => item.id === teacher.id)
-        if (!seeded) return teacher
-        return {
-          ...teacher,
-          bio: seeded.bio,
-          title: seeded.title,
-          photo: seeded.photo,
-          lattes: seeded.lattes,
-          credentials: seeded.credentials,
-        }
+      [
+        ...current
+          .filter((teacher) => !retiredTeacherIds.has(teacher.id))
+          .map((teacher) => {
+            const seeded = initialTeachers.find((item) => item.id === teacher.id)
+            if (!seeded) return teacher
+            return {
+              ...teacher,
+              name: seeded.name,
+              crm: seeded.crm,
+              bio: seeded.bio,
+              title: seeded.title,
+              photo: seeded.photo,
+              lattes: seeded.lattes,
+              credentials: seeded.credentials,
+              specialties: seeded.specialties,
+            }
+          }),
+        ...initialTeachers.filter((teacher) => !current.some((item) => item.id === teacher.id)),
+      ],
+    )
+    setSpecialties((current) =>
+      current.map((specialty) => {
+        const seeded = initialSpecialties.find((item) => item.id === specialty.id)
+        return normalizeSpecialtyAccess({
+          ...(seeded ?? specialty),
+          ...specialty,
+          teacherIds: (specialty.teacherIds ?? seeded?.teacherIds ?? []).map((teacherId) => retiredTeacherReplacement[teacherId] ?? teacherId),
+        })
       }),
     )
-  }, [setCertificates, setLessons, setTeachers])
+    setStudents((current) =>
+      current.map((student) => {
+        const seeded = initialStudents.find((item) => item.id === student.id)
+        return seeded ? { ...student, email: seeded.email, plan: seeded.plan, interest: seeded.interest } : student
+      }),
+    )
+  }, [setCertificates, setLessons, setSpecialties, setStudents, setTeachers])
 
   return (
     <DataContext.Provider
@@ -422,7 +547,7 @@ function LessonCover({
   compact?: boolean
 }) {
   const youtubeId = getYouTubeId(lesson.videoUrl)
-  const previewImage = youtubeId ? `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg` : ''
+  const previewImage = lesson.coverImage || (youtubeId ? `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg` : '')
   const sourceLabel = lesson.videoSource === 'youtube' ? 'Replay' : lesson.videoSource === 'upload' ? 'Upload' : 'Preview'
 
   return (
@@ -475,6 +600,54 @@ function getYouTubeId(url?: string) {
     if (match?.[1]) return match[1]
   }
   return null
+}
+
+type YouTubeImportPreview = {
+  title: string
+  authorName: string
+  thumbnailUrl: string
+  suggestedDescription: string
+}
+
+function buildYoutubeSuggestedDescription(title: string, specialtyName: string) {
+  return `${title}. Aula organizada para ${specialtyName.toLowerCase()}, com foco prático em técnica, interpretação dos achados e aplicação no atendimento e no laudo.`
+}
+
+async function fetchYouTubeImportPreview(videoUrl: string, specialtyName: string): Promise<YouTubeImportPreview | null> {
+  const endpoint = `https://noembed.com/embed?url=${encodeURIComponent(videoUrl)}`
+  const response = await fetch(endpoint)
+  if (!response.ok) return null
+  const data = await response.json() as { title?: string; author_name?: string; thumbnail_url?: string }
+  if (!data.title) return null
+  return {
+    title: data.title,
+    authorName: data.author_name ?? 'Canal no YouTube',
+    thumbnailUrl: data.thumbnail_url ?? '',
+    suggestedDescription: buildYoutubeSuggestedDescription(data.title, specialtyName),
+  }
+}
+
+function getMaterialTypeFromTitle(title: string): Material['type'] {
+  const normalized = title.toLowerCase()
+  if (normalized.includes('laudo')) return 'Modelo de laudo'
+  if (normalized.includes('check')) return 'Checklist prático'
+  if (normalized.includes('mapa')) return 'Mapa mental'
+  if (normalized.includes('resumo')) return 'Resumo ilustrado'
+  if (normalized.endsWith('.pdf')) return 'PDF complementar'
+  return 'Arquivo complementar'
+}
+
+function parseDurationToMinutes(duration: string) {
+  const hourMatch = duration.match(/(\d+)\s*h/)
+  const minuteMatch = duration.match(/(\d+)\s*min/)
+  const hours = hourMatch ? Number(hourMatch[1]) * 60 : 0
+  const minutes = minuteMatch ? Number(minuteMatch[1]) : 0
+  return hours + minutes
+}
+
+function formatMinutesAsHours(minutes: number) {
+  const totalHours = Math.max(1, Math.round(minutes / 60))
+  return `${totalHours} horas`
 }
 
 function LessonVideoPlayer({ lesson, progress }: { lesson: Lesson; progress: number }) {
@@ -574,6 +747,7 @@ function LessonCard({ lesson, compact = false }: { lesson: Lesson; compact?: boo
   const { teachers, specialties, completedLessonIds } = useData()
   const teacher = getTeacher(lesson.teacherId, teachers)
   const specialty = getSpecialty(lesson.specialtySlug, specialties)
+  const accessSummary = getLessonAccessSummary(lesson, specialties)
   const progress = getLessonProgress(lesson, completedLessonIds)
   const status = getLessonStatus(lesson, completedLessonIds)
   const locked = isLessonLocked(lesson)
@@ -616,6 +790,11 @@ function LessonCard({ lesson, compact = false }: { lesson: Lesson; compact?: boo
           <span>{lesson.duration}</span>
           <span className="h-1 w-1 rounded-full bg-slate-300" />
           <span>{specialty.name}</span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Badge tone={resolveLessonAccess(lesson, specialties).mode === 'avulsa' ? 'amber' : resolveLessonAccess(lesson, specialties).mode === 'gratuita' ? 'emerald' : 'slate'}>
+            {accessSummary}
+          </Badge>
         </div>
         <div className="space-y-2">
           <ProgressBar value={progress} />
@@ -679,7 +858,7 @@ function CertificateCard({
 }
 
 function CertificatesShowcase({ compact = false }: { compact?: boolean }) {
-  const { certificates, students, teachers, specialties } = useData()
+  const { certificates, students, teachers, specialties, lessons, completedLessonIds } = useData()
   const [selected, setSelected] = useState<Certificate | null>(null)
   const [downloadedIds, setDownloadedIds] = useLocalStorageState<string[]>('certificate-downloads', [])
   const student = students.find((item) => item.id === 'joao-mendes') ?? students[0]
@@ -687,57 +866,89 @@ function CertificatesShowcase({ compact = false }: { compact?: boolean }) {
   const downloadCertificate = (certificate: Certificate) => {
     const teacher = getTeacher(certificate.teacherId, teachers)
     const specialty = getSpecialty(certificate.specialtySlug, specialties)
+    const specialtyLessons = lessons.filter((lesson) => lesson.specialtySlug === certificate.specialtySlug)
+    const completedMinutes = specialtyLessons
+      .filter((lesson) => completedLessonIds.includes(lesson.id))
+      .reduce((sum, lesson) => sum + parseDurationToMinutes(lesson.duration), 0)
+    const completedHours = formatMinutesAsHours(completedMinutes)
+    const issueLabel = certificate.issueDate ? formatDate(certificate.issueDate) : formatDate(getTodayKey())
+    const logoSrc = `${window.location.origin}/brand/unezus-site-logo.png`
+    const signatureName = teacher.name
+    const signatureRole = teacher.title || 'Direção acadêmica UNEZUS'
     const documentHtml = `<!doctype html>
 <html lang="pt-BR">
   <head>
     <meta charset="utf-8" />
     <title>${certificate.title}</title>
     <style>
-      body { margin: 0; background: #e2e8f0; font-family: "Georgia", serif; }
-      .sheet { width: 1120px; min-height: 790px; margin: 24px auto; background: linear-gradient(135deg, #f8fbff 0%, #ffffff 58%, #eff6ff 100%); border: 12px solid #082f49; padding: 64px; box-sizing: border-box; color: #0f172a; }
-      .eyebrow { letter-spacing: .28em; text-transform: uppercase; font-size: 12px; font-family: Arial, sans-serif; color: #0f6b9f; font-weight: 700; }
-      h1 { margin: 24px 0 12px; font-size: 52px; line-height: 1; }
-      h2 { margin: 18px 0 0; font-size: 42px; color: #075985; }
-      p { font-size: 20px; line-height: 1.7; margin: 16px 0; font-family: Arial, sans-serif; }
-      .meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; margin-top: 36px; }
-      .box { border: 1px solid #bfdbfe; background: rgba(255,255,255,.78); padding: 18px; border-radius: 18px; }
-      .label { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: #64748b; font-weight: 700; }
-      .value { margin-top: 8px; font-size: 18px; font-weight: 700; color: #0f172a; }
-      .footer { display: flex; justify-content: space-between; gap: 24px; margin-top: 56px; align-items: flex-end; }
-      .signature { border-top: 1px solid #94a3b8; padding-top: 12px; min-width: 320px; }
-      .code { text-align: right; font-family: Arial, sans-serif; font-size: 14px; color: #475569; }
+      @page { size: A4 landscape; margin: 14mm; }
+      body { margin: 0; background: #dbe7f4; font-family: Arial, sans-serif; color: #0f172a; }
+      .sheet { width: 1120px; min-height: 760px; margin: 18px auto; background: linear-gradient(135deg, #f7fbff 0%, #ffffff 52%, #eef7ff 100%); border: 10px solid #0b3b60; border-radius: 28px; padding: 48px 56px 40px; box-sizing: border-box; position: relative; overflow: hidden; }
+      .sheet::before { content: ""; position: absolute; inset: 16px; border: 1px solid rgba(14, 116, 144, .18); border-radius: 22px; pointer-events: none; }
+      .brand { display: flex; align-items: center; justify-content: space-between; gap: 24px; position: relative; z-index: 1; }
+      .brand img { height: 54px; object-fit: contain; }
+      .eyebrow { letter-spacing: .26em; text-transform: uppercase; font-size: 11px; color: #0f6b9f; font-weight: 800; }
+      h1 { margin: 18px 0 6px; font-size: 48px; line-height: 1; }
+      .student-label { margin-top: 20px; font-size: 12px; letter-spacing: .24em; text-transform: uppercase; color: #8aa0ba; font-weight: 800; }
+      h2 { margin: 10px 0 0; font-size: 44px; color: #075985; line-height: 1.05; }
+      p { font-size: 19px; line-height: 1.7; margin: 14px 0; }
+      .meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 30px; }
+      .box { border: 1px solid #d5e7f8; background: rgba(255,255,255,.82); padding: 18px; border-radius: 18px; }
+      .label { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: #64748b; font-weight: 800; }
+      .value { margin-top: 8px; font-size: 18px; font-weight: 800; color: #0f172a; line-height: 1.4; }
+      .signatures { display: grid; grid-template-columns: 1.1fr .9fr; gap: 24px; margin-top: 40px; align-items: end; }
+      .signature-card { border: 1px solid #d5e7f8; background: rgba(255,255,255,.88); border-radius: 18px; padding: 18px 20px; }
+      .signature-line { margin-top: 28px; border-top: 1px solid #94a3b8; padding-top: 12px; }
+      .signature-name { font-size: 22px; font-weight: 800; color: #0f172a; }
+      .signature-role { margin-top: 6px; font-size: 14px; color: #64748b; }
+      .code { text-align: right; font-size: 13px; color: #475569; }
+      .print-note { margin-top: 16px; font-size: 12px; color: #64748b; }
     </style>
   </head>
   <body>
     <div class="sheet">
-      <div class="eyebrow">UNEZUS Academy</div>
+      <div class="brand">
+        <img src="${logoSrc}" alt="UNEZUS Academy" />
+        <div class="eyebrow">Educação Continuada em Ultrassonografia</div>
+      </div>
       <h1>Certificado de Conclusão</h1>
-      <p>Certificamos que</p>
+      <div class="student-label">Aluno certificado</div>
       <h2>${student.name}</h2>
-      <p>concluiu o módulo <strong>${certificate.title}</strong>, da especialidade de <strong>${specialty.name}</strong>, com carga horária de <strong>${certificate.hours}</strong>.</p>
+      <p>Certificamos que o aluno concluiu o módulo <strong>${certificate.title}</strong>, pertencente à trilha de <strong>${specialty.name}</strong>, com carga horária validada de <strong>${completedHours}</strong>, conforme progresso e conteúdos assistidos na plataforma UNEZUS Academy.</p>
       <div class="meta">
         <div class="box"><div class="label">Módulo</div><div class="value">${certificate.module}</div></div>
-        <div class="box"><div class="label">Situação</div><div class="value">${certificate.status}</div></div>
-        <div class="box"><div class="label">Emitido em</div><div class="value">${certificate.issueDate ? formatDate(certificate.issueDate) : 'Disponível na plataforma'}</div></div>
+        <div class="box"><div class="label">Carga horária</div><div class="value">${completedHours}</div></div>
+        <div class="box"><div class="label">Emitido em</div><div class="value">${issueLabel}</div></div>
         <div class="box"><div class="label">Código</div><div class="value">${certificate.certificateCode}</div></div>
       </div>
-      <div class="footer">
-        <div class="signature">
-          <div style="font-size:24px;font-weight:700;">${teacher.name}</div>
-          <div style="margin-top:6px;font-family:Arial,sans-serif;color:#475569;">${teacher.title}</div>
+      <div class="signatures">
+        <div class="signature-card">
+          <div class="label">Assinatura responsável</div>
+          <div class="signature-line">
+            <div class="signature-name">${signatureName}</div>
+            <div class="signature-role">${signatureRole}</div>
+          </div>
         </div>
-        <div class="code">Documento demonstrativo gerado na prévia da plataforma UNEZUS Academy.</div>
+        <div class="signature-card">
+          <div class="label">Validação institucional</div>
+          <div class="value">UNEZUS Academy</div>
+          <div class="print-note">Documento emitido pela plataforma de educação continuada da UNEZUS, com validação interna de progresso, trilha e biblioteca do aluno.</div>
+          <div class="code">Código de verificação: ${certificate.certificateCode}</div>
+        </div>
       </div>
     </div>
   </body>
 </html>`
-    const file = new Blob([documentHtml], { type: 'text/html;charset=utf-8' })
-    const url = URL.createObjectURL(file)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = `${makeId('certificado', certificate.title)}.html`
-    anchor.click()
-    URL.revokeObjectURL(url)
+    const popup = window.open('', '_blank', 'noopener,noreferrer,width=1280,height=900')
+    if (popup) {
+      popup.document.open()
+      popup.document.write(documentHtml)
+      popup.document.close()
+      popup.focus()
+      window.setTimeout(() => {
+        popup.print()
+      }, 300)
+    }
     setDownloadedIds((current) => (current.includes(certificate.id) ? current : [...current, certificate.id]))
   }
 
@@ -758,16 +969,23 @@ function CertificatesShowcase({ compact = false }: { compact?: boolean }) {
           {selected.status === 'disponível' ? (
             <div>
               <div className="overflow-hidden rounded-[2rem] border border-sky-100 bg-[radial-gradient(circle_at_top_right,rgba(56,189,248,.22),transparent_28%),linear-gradient(135deg,#f8fbff_0%,#ffffff_55%,#eff6ff_100%)] p-6">
-                <p className="text-xs font-black uppercase tracking-[0.2em] text-sky-700">UNEZUS Academy</p>
+                <img src="/brand/unezus-site-logo.png" alt="UNEZUS Academy" className="h-12 w-auto object-contain" />
                 <h3 className="mt-3 text-3xl font-black tracking-tight text-slate-950">Certificado de conclusão</h3>
                 <p className="mt-4 text-sm font-semibold uppercase tracking-[0.14em] text-slate-400">Aluno certificado</p>
                 <p className="mt-2 text-4xl font-black text-sky-900">{student.name}</p>
                 <p className="mt-5 max-w-3xl text-base leading-7 text-slate-600">
-                  Conclusão confirmada do módulo <strong>{selected.title}</strong>, com emissão liberada para download imediato dentro da biblioteca premium da UNEZUS.
+                  Conclusão confirmada do módulo <strong>{selected.title}</strong>, com emissão liberada para download em PDF dentro da plataforma UNEZUS.
                 </p>
                 <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                   <InfoLine label="Módulo" value={selected.module} />
-                  <InfoLine label="Carga horária" value={selected.hours} />
+                  <InfoLine
+                    label="Carga horária"
+                    value={formatMinutesAsHours(
+                      lessons
+                        .filter((lesson) => lesson.specialtySlug === selected.specialtySlug && completedLessonIds.includes(lesson.id))
+                        .reduce((sum, lesson) => sum + parseDurationToMinutes(lesson.duration), 0),
+                    )}
+                  />
                   <InfoLine label="Emissão" value={selected.issueDate ? formatDate(selected.issueDate) : 'Disponível agora'} />
                   <InfoLine label="Código" value={selected.certificateCode} />
                 </div>
@@ -782,7 +1000,7 @@ function CertificatesShowcase({ compact = false }: { compact?: boolean }) {
               </div>
               <div className="mt-5 flex flex-col gap-3 sm:flex-row">
                 <button onClick={() => downloadCertificate(selected)} className="rounded-2xl bg-sky-950 px-5 py-3 text-sm font-black text-white">
-                  Baixar certificado fake
+                  Baixar em PDF
                 </button>
                 <button onClick={() => setSelected(null)} className="rounded-2xl border border-slate-200 px-5 py-3 text-sm font-black text-slate-700">
                   Fechar
@@ -1184,7 +1402,7 @@ function LandingPage() {
                   Ver currículo Lattes
                 </a>
                 <Link to="/login" className="inline-flex rounded-full border border-slate-200 px-5 py-3 text-sm font-black text-slate-700">
-                  Acessar aulas da demo
+                  Acessar aulas
                 </Link>
               </div>
             </div>
@@ -1209,7 +1427,7 @@ function LandingPage() {
               <p className="text-sm font-black uppercase tracking-[0.18em] text-sky-700">Dr. Antônio Gadelha</p>
               <h3 className="mt-3 text-3xl font-black tracking-tight text-slate-950">Mais do que professor: âncora de autoridade da plataforma.</h3>
               <p className="mt-4 text-base leading-8 text-slate-600">
-                Na demo, a presença dele foi organizada para sustentar a percepção premium da UNEZUS desde a landing, passando pela direção científica, cards de professores, páginas de aula e certificados.
+                A presença dele foi organizada para sustentar a percepção premium da UNEZUS desde a landing, passando pela direção científica, cards de professores, páginas de aula e certificados.
               </p>
               <div className="mt-6 grid gap-3 sm:grid-cols-2">
                 <InfoLine label="Titulação" value="Mestre, Doutor e Pós-Doutor pela USP" />
@@ -1253,7 +1471,7 @@ function LandingPage() {
             <p className="text-sm font-black uppercase tracking-[0.18em] text-sky-700">Planos e acessos</p>
             <h2 className="mt-3 text-3xl font-black tracking-tight text-slate-950 md:text-4xl">Modelos comerciais claros para assinatura, pós-curso e biblioteca premium.</h2>
             <p className="mt-4 text-base leading-8 text-slate-600">
-              A prévia agora mostra melhor como a UNEZUS pode vender acessos diferentes sem confundir o aluno nem complicar a operação.
+              A plataforma agora mostra melhor como a UNEZUS pode vender acessos diferentes sem confundir o aluno nem complicar a operação.
             </p>
           </div>
           <div className="mt-10 grid gap-4 xl:grid-cols-5 md:grid-cols-2">
@@ -1286,10 +1504,10 @@ function LandingPage() {
               <div>
                 <p className="text-sm font-black uppercase tracking-[0.18em] text-cyan-100">Nova experiência</p>
                 <h2 className="mt-3 text-3xl font-black tracking-tight">Entre para a nova experiência de ensino da UNEZUS</h2>
-                <p className="mt-3 max-w-2xl text-sky-50/80">Uma prévia navegável para demonstrar assinatura, recorrência, biblioteca premium e operação administrativa sem depender de programador.</p>
+                <p className="mt-3 max-w-2xl text-sky-50/80">Uma plataforma pensada para assinatura, recorrência, biblioteca premium e operação administrativa sem depender de programador.</p>
               </div>
               <Link to="/login" className="rounded-full bg-white px-6 py-3 text-center text-sm font-black text-sky-950">
-                Entrar na demo
+                Entrar na plataforma
               </Link>
             </div>
           </div>
@@ -1334,15 +1552,15 @@ function LoginPage() {
           </div>
           <div className="rounded-[2rem] border border-slate-200 bg-white p-7 shadow-2xl shadow-slate-950/8">
             <h2 className="text-2xl font-black tracking-tight text-slate-950">Entrar na UNEZUS Academy</h2>
-            <p className="mt-2 text-sm font-semibold text-slate-500">Use os botões demo para navegar pela prévia.</p>
+            <p className="mt-2 text-sm font-semibold text-slate-500">Use os acessos rápidos para navegar pela plataforma.</p>
             <form className="mt-7 space-y-4" onSubmit={(event) => event.preventDefault()}>
               <label className="block">
                 <span className="text-sm font-bold text-slate-700">E-mail</span>
-                <input className="mt-2 h-12 w-full rounded-2xl border border-slate-200 px-4 font-semibold outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" defaultValue="joao.mendes@unezusdemo.com" />
+                <input className="mt-2 h-12 w-full rounded-2xl border border-slate-200 px-4 font-semibold outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" defaultValue="joao.mendes@aluno.unezus.com.br" />
               </label>
               <label className="block">
                 <span className="text-sm font-bold text-slate-700">Senha</span>
-                <input type="password" className="mt-2 h-12 w-full rounded-2xl border border-slate-200 px-4 font-semibold outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" defaultValue="demo1234" />
+                <input type="password" className="mt-2 h-12 w-full rounded-2xl border border-slate-200 px-4 font-semibold outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" defaultValue="unezus123" />
               </label>
               <div className="flex items-center justify-between text-sm">
                 <label className="flex items-center gap-2 font-semibold text-slate-500">
@@ -1355,10 +1573,10 @@ function LoginPage() {
               </button>
               <div className="grid gap-3 sm:grid-cols-2">
                 <button type="button" onClick={() => enterAs('student')} className="h-12 rounded-2xl border border-sky-200 bg-sky-50 font-black text-sky-800">
-                  Entrar como aluno demo
+                  Entrar como aluno
                 </button>
                 <button type="button" onClick={() => enterAs('admin')} className="h-12 rounded-2xl border border-slate-200 bg-slate-950 font-black text-white">
-                  Entrar como administrador demo
+                  Entrar como administrador
                 </button>
               </div>
             </form>
@@ -1611,6 +1829,7 @@ function StudentDashboard() {
   const student = students.find((item) => item.id === 'joao-mendes') ?? students[0]
   const [aiQuery, setAiQuery] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
+  const orderedSpecialties = getOrderedSpecialties(specialties)
   const visibleLessons = lessons.filter(isLessonVisibleToStudent)
   const releasedLessons = visibleLessons.filter(isLessonReleased)
   const upcomingLessons = [...visibleLessons].filter(isLessonLocked).sort((a, b) => a.releaseDate.localeCompare(b.releaseDate))
@@ -1651,7 +1870,7 @@ function StudentDashboard() {
             <div>
               <p className="text-sm font-black uppercase tracking-[0.18em] text-cyan-100">Área do aluno</p>
               <h1 className="mt-3 text-3xl font-black tracking-tight md:text-4xl">Olá, Dr. João</h1>
-              <p className="mt-3 max-w-2xl text-sm font-medium leading-6 text-sky-50/82">
+              <p className="mt-3 hidden max-w-2xl text-sm font-medium leading-6 text-sky-50/82 sm:block">
                 Continue suas trilhas de ultrassonografia, revise laudos e acompanhe as próximas liberações da UNEZUS.
               </p>
               <div className="mt-6">
@@ -1667,7 +1886,7 @@ function StudentDashboard() {
           </div>
         </div>
 
-        <div className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="hidden rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm lg:block">
           <SectionTitle title="Próximas liberações" />
           <div className="space-y-3">
             {events.slice(0, 4).map((event) => (
@@ -1685,14 +1904,33 @@ function StudentDashboard() {
         </div>
       </section>
 
-      <section className="mt-6 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <section className="mt-5 lg:hidden">
+        <div className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <SectionTitle title="Próximas liberações" />
+          <div className="space-y-3">
+            {events.slice(0, 3).map((event) => (
+              <div key={event.id} className="flex gap-3 rounded-2xl bg-slate-50 p-3">
+                <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-sky-50 text-sm font-black text-sky-800">
+                  {new Date(`${event.date}T12:00:00`).getDate()}
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-black text-slate-950">{event.title}</p>
+                  <p className="text-xs font-semibold text-slate-500">{event.type} · {formatDate(event.date)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-6 hidden gap-4 md:grid md:grid-cols-2 lg:grid-cols-4">
         <MetricCard icon="MonitorPlay" label="Em andamento" value={`${releasedLessons.filter((lesson) => getLessonStatus(lesson, completedLessonIds) === 'em andamento').length}`} detail="aulas retomáveis" />
         <MetricCard icon="CalendarDays" label="Próximas liberações" value={`${upcomingLessons.length}`} detail="conteúdos programados" />
         <MetricCard icon="FileText" label="Laudos" value={`${reports.length}`} detail="modelos prontos" />
         <MetricCard icon="Trophy" label="Ranking" value="#3" detail="na comunidade" />
       </section>
 
-      <section className="mt-9 grid gap-5 lg:grid-cols-[1.15fr_0.85fr]">
+      <section className="mt-9 hidden gap-5 lg:grid lg:grid-cols-[1.15fr_0.85fr]">
         <div className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
           <SectionTitle title="Liberação gradual da trilha" action={<Badge tone="sky">Assinatura ativa</Badge>} />
           <div className="space-y-3">
@@ -1732,7 +1970,7 @@ function StudentDashboard() {
         </div>
       </section>
 
-      <section className="mt-9 rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="mt-9 hidden rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm lg:block">
         <div className="grid gap-5 lg:grid-cols-[1fr_1fr]">
           <div>
             <p className="text-sm font-black uppercase tracking-[0.16em] text-sky-700">Assistente de Estudos IA</p>
@@ -1799,9 +2037,100 @@ function StudentDashboard() {
       <LessonRail title="Novas aulas liberadas" lessons={releasedLessons.filter((lesson) => lesson.status === 'novo')} />
       <LessonRail title="Mais assistidas" lessons={[...releasedLessons].sort((a, b) => b.views - a.views).slice(0, 8)} />
 
-      {specialties.map((specialty) => (
+      {orderedSpecialties.map((specialty) => (
         <LessonRail key={specialty.id} title={specialty.name} lessons={visibleLessons.filter((lesson) => lesson.specialtySlug === specialty.slug)} />
       ))}
+
+      <section className="mt-9 lg:hidden">
+        <div className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <SectionTitle title="Liberação gradual da trilha" action={<Badge tone="sky">Assinatura ativa</Badge>} />
+          <div className="space-y-3">
+            {upcomingLessons.slice(0, 4).map((lesson) => (
+              <div key={lesson.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="rounded-2xl bg-white p-3 text-center shadow-sm">
+                  <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">Libera</p>
+                  <p className="mt-2 text-2xl font-black text-sky-900">{new Date(`${lesson.releaseDate}T12:00:00`).getDate()}</p>
+                  <p className="text-xs font-bold text-slate-500">{getMonthShortLabel(lesson.releaseDate)}</p>
+                </div>
+                <div className="mt-4">
+                  <p className="text-sm font-black text-slate-950">{lesson.title}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-500">{lesson.module} · {getReleaseLabel(lesson)}</p>
+                  <p className="mt-2 text-xs font-bold uppercase tracking-[0.14em] text-sky-700">{getVideoSourceLabel(lesson.videoSource)}</p>
+                  <div className="mt-3">
+                    <ProgressBar value={8} />
+                  </div>
+                  <div className="mt-2">
+                    <StatusBadge status="em breve" />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-9 lg:hidden">
+        <div className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <div>
+            <p className="text-sm font-black uppercase tracking-[0.16em] text-sky-700">Assistente de Estudos IA</p>
+            <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-950">Revise temas com recomendações conectadas ao acervo.</h2>
+            <div className="mt-5 flex gap-2">
+              <input
+                value={aiQuery}
+                onChange={(event) => setAiQuery(event.target.value)}
+                placeholder="Digite um tema para revisar"
+                className="h-12 min-w-0 flex-1 rounded-2xl border border-slate-200 px-4 font-semibold outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
+              />
+              <button onClick={() => askAi()} className="rounded-2xl bg-sky-950 px-5 font-black text-white">
+                Revisar
+              </button>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {['Explique BI-RADS de forma prática', 'Quais achados sugerem endometriose?', 'Resumo de Doppler obstétrico'].map((example) => (
+                <button
+                  key={example}
+                  onClick={() => {
+                    setAiQuery(example)
+                    askAi(example)
+                  }}
+                  className="rounded-full bg-sky-50 px-3 py-2 text-xs font-bold text-sky-800"
+                >
+                  {example}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="mt-5 rounded-2xl bg-slate-50 p-5">
+            {parsedAnswer ? (
+              <div>
+                <p className="text-sm font-black text-slate-950">Resposta simulada</p>
+                <p className="mt-3 text-sm font-medium leading-6 text-slate-600">{parsedAnswer.summary}</p>
+                <div className="mt-4 grid gap-3">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">Aulas recomendadas</p>
+                    <ul className="mt-2 space-y-2 text-sm font-bold text-slate-700">
+                      {parsedAnswer.lessons.map((lesson) => <li key={lesson}>• {lesson}</li>)}
+                    </ul>
+                  </div>
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">Laudos relacionados</p>
+                    <ul className="mt-2 space-y-2 text-sm font-bold text-slate-700">
+                      {parsedAnswer.reports.map((report) => <li key={report}>• {report}</li>)}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex min-h-36 items-center justify-center text-center">
+                <div>
+                  <Icons.Sparkles className="mx-auto h-8 w-8 text-sky-700" />
+                  <p className="mt-3 text-sm font-bold text-slate-500">Digite um tema para ver resumo, aulas e laudos recomendados.</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
 
       <section className="mt-9">
         <SectionTitle title="Certificados e trilhas concluídas" action={<Badge tone="emerald">Emissão premium</Badge>} />
@@ -1841,6 +2170,9 @@ function SpecialtyPage() {
               <Badge tone="sky">{specialtyLessons.length} aulas</Badge>
               <Badge tone="sky">{modules.length} módulos</Badge>
               <Badge tone="sky">{specialty.teacherIds.length} professores</Badge>
+              <Badge tone={specialty.accessMode === 'avulsa' ? 'amber' : specialty.accessMode === 'gratuita' ? 'emerald' : 'slate'}>
+                {getSpecialtyAccessSummary(specialty)}
+              </Badge>
             </div>
           </div>
           <MedicalThumb tone={specialty.slug.includes('mama') ? 'mama' : specialty.slug.includes('doppler') ? 'doppler' : 'gineco'} label={specialty.name} />
@@ -2056,6 +2388,20 @@ function LessonPage() {
           </div>
         </section>
 
+        {lesson.quizQuestions?.length ? (
+          <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
+            <SectionTitle title={lesson.quizTitle || 'Quiz da aula'} />
+            <div className="grid gap-3">
+              {lesson.quizQuestions.map((question, index) => (
+                <div key={`${lesson.id}-quiz-${index}`} className="rounded-2xl bg-slate-50 p-4">
+                  <p className="text-sm font-black text-slate-950">Pergunta {index + 1}</p>
+                  <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{question}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
           <SectionTitle title={locked ? 'Comentários e aquecimento da turma' : 'Comentários e dúvidas'} />
           <div className="space-y-4">
@@ -2149,42 +2495,159 @@ function CalendarPage() {
   const { events, teachers } = useData()
   const [filter, setFilter] = useState<CalendarEvent['type'] | 'Todos'>('Todos')
   const [selected, setSelected] = useState<CalendarEvent | null>(null)
-  const filteredEvents = filter === 'Todos' ? events : events.filter((event) => event.type === filter)
+  const [showPastEvents, setShowPastEvents] = useState(false)
+  const sortedEvents = useMemo(() => [...events].sort((a, b) => a.date.localeCompare(b.date)), [events])
+  const filteredEvents = useMemo(
+    () => (filter === 'Todos' ? sortedEvents : sortedEvents.filter((event) => event.type === filter)),
+    [filter, sortedEvents],
+  )
+  const upcomingEvents = useMemo(() => filteredEvents.filter((event) => getDateDistance(event.date) >= 0), [filteredEvents])
+  const pastEvents = useMemo(
+    () => filteredEvents.filter((event) => getDateDistance(event.date) < 0).sort((a, b) => b.date.localeCompare(a.date)),
+    [filteredEvents],
+  )
+  const featuredEvent = upcomingEvents[0] ?? null
+  const nextEvents = featuredEvent ? upcomingEvents.slice(1) : []
   const days = Array.from({ length: 31 }, (_, index) => index + 1)
   const firstDay = new Date('2026-05-01T12:00:00').getDay()
+
+  const getEventRelativeLabel = (date: string) => {
+    const distance = getDateDistance(date)
+    if (distance === 0) return 'Hoje'
+    if (distance === 1) return 'Amanhã'
+    if (distance <= 7) return 'Chegando'
+    return 'Próximo evento'
+  }
+
+  const getEventLabelTone = (date: string) => {
+    const distance = getDateDistance(date)
+    if (distance === 0) return 'bg-emerald-100 text-emerald-800'
+    if (distance === 1) return 'bg-sky-100 text-sky-800'
+    return 'bg-white/15 text-white'
+  }
 
   return (
     <div>
       <SectionTitle title="Calendário de conteúdos" />
-      <div className="mb-5 flex flex-wrap gap-2">
-        {(['Todos', ...eventTypes] as const).map((type) => (
-          <button
-            key={type}
-            onClick={() => setFilter(type)}
-            className={clsx('rounded-full px-4 py-2 text-sm font-black', filter === type ? 'bg-sky-950 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200')}
-          >
-            {type}
-          </button>
-        ))}
+      <div className="mb-5 -mx-1 overflow-x-auto pb-1 md:mx-0 md:overflow-visible md:pb-0">
+        <div className="flex w-max gap-2 px-1 md:w-auto md:flex-wrap md:px-0">
+          {(['Todos', ...eventTypes] as const).map((type) => (
+            <button
+              key={type}
+              onClick={() => setFilter(type)}
+              className={clsx(
+                'shrink-0 rounded-full px-4 py-2 text-sm font-black',
+                filter === type ? 'bg-sky-950 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200',
+              )}
+            >
+              {type}
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="grid gap-3 md:hidden">
-        {filteredEvents.map((event) => (
+      <div className="space-y-4 md:hidden">
+        {featuredEvent && (
           <button
-            key={event.id}
-            onClick={() => setSelected(event)}
-            className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm"
+            onClick={() => setSelected(featuredEvent)}
+            className="w-full overflow-hidden rounded-[2rem] bg-sky-950 p-5 text-left text-white shadow-lg"
           >
-            <span className="flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-2xl bg-sky-50 text-center font-black text-sky-800">
-              <span className="text-sm">{new Date(`${event.date}T12:00:00`).getDate()}</span>
-              <span className="text-[10px] uppercase text-sky-600">mai</span>
-            </span>
-            <span className="min-w-0">
-              <span className="block text-sm font-black text-slate-950">{event.title}</span>
-              <span className="mt-1 block text-xs font-bold text-slate-500">{event.type} · {formatDate(event.date)}</span>
-              <span className="mt-2 block text-xs leading-5 text-slate-500">{event.description}</span>
-            </span>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-sky-100">Agenda inteligente</p>
+                <h3 className="mt-2 text-2xl font-black tracking-tight">{featuredEvent.title}</h3>
+              </div>
+              <span className={clsx('rounded-full px-3 py-1 text-xs font-black', getEventLabelTone(featuredEvent.date))}>
+                {getEventRelativeLabel(featuredEvent.date)}
+              </span>
+            </div>
+            <div className="mt-5 grid grid-cols-[72px_1fr] gap-4">
+              <div className="rounded-[1.5rem] bg-white/10 p-3 text-center">
+                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-sky-100">{getMonthShortLabel(featuredEvent.date)}</p>
+                <p className="mt-1 text-3xl font-black">{new Date(`${featuredEvent.date}T12:00:00`).getDate()}</p>
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm font-bold text-sky-100">{featuredEvent.type} · {formatDate(featuredEvent.date)}</p>
+                <p className="text-sm leading-6 text-sky-50/90">{featuredEvent.description}</p>
+                <p className="text-xs font-black uppercase tracking-[0.16em] text-sky-100">Toque para ver detalhes</p>
+              </div>
+            </div>
           </button>
-        ))}
+        )}
+
+        <div className="rounded-[2rem] border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Próximos eventos</p>
+              <h3 className="mt-1 text-xl font-black tracking-tight text-slate-950">
+                {upcomingEvents.length > 0 ? 'Chegando agora' : 'Sem próximos eventos'}
+              </h3>
+            </div>
+            {upcomingEvents.length > 0 && (
+              <span className="rounded-full bg-sky-50 px-3 py-1 text-xs font-black text-sky-700">
+                {upcomingEvents.length} programados
+              </span>
+            )}
+          </div>
+
+          <div className="mt-4 space-y-3">
+            {(featuredEvent ? nextEvents : upcomingEvents).slice(0, 6).map((event) => (
+              <button
+                key={event.id}
+                onClick={() => setSelected(event)}
+                className="flex w-full items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-left"
+              >
+                <span className="flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-2xl bg-white text-center font-black text-sky-800 shadow-sm">
+                  <span className="text-sm">{new Date(`${event.date}T12:00:00`).getDate()}</span>
+                  <span className="text-[10px] uppercase text-sky-600">{getMonthShortLabel(event.date)}</span>
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-black text-slate-950">{event.title}</span>
+                  <span className="mt-1 block text-xs font-bold text-slate-500">{event.type} · {formatDate(event.date)}</span>
+                  <span className="mt-2 block text-xs leading-5 text-slate-500">{event.description}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {pastEvents.length > 0 && (
+          <div className="rounded-[2rem] border border-slate-200 bg-white p-4 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setShowPastEvents((current) => !current)}
+              className="flex w-full items-center justify-between gap-3 text-left"
+            >
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Histórico</p>
+                <h3 className="mt-1 text-lg font-black tracking-tight text-slate-950">Eventos anteriores</h3>
+              </div>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">
+                {showPastEvents ? 'Ocultar' : `${pastEvents.length} anteriores`}
+              </span>
+            </button>
+
+            {showPastEvents && (
+              <div className="mt-4 space-y-3">
+                {pastEvents.slice(0, 6).map((event) => (
+                  <button
+                    key={event.id}
+                    onClick={() => setSelected(event)}
+                    className="flex w-full items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-left opacity-90"
+                  >
+                    <span className="flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-2xl bg-white text-center font-black text-slate-600 shadow-sm">
+                      <span className="text-sm">{new Date(`${event.date}T12:00:00`).getDate()}</span>
+                      <span className="text-[10px] uppercase text-slate-500">{getMonthShortLabel(event.date)}</span>
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-black text-slate-900">{event.title}</span>
+                      <span className="mt-1 block text-xs font-bold text-slate-500">{event.type} · {formatDate(event.date)}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
       <div className="hidden overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-sm md:block">
         <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50 text-center text-xs font-black uppercase tracking-[0.12em] text-slate-400">
@@ -2291,7 +2754,7 @@ function ReportsPage() {
             <div className="mt-5 grid grid-cols-3 gap-2">
               <button onClick={() => setSelected(report)} className="rounded-xl bg-sky-950 py-2 text-xs font-black text-white">Visualizar</button>
               <button onClick={() => copyReport(report)} className="rounded-xl border border-slate-200 py-2 text-xs font-black text-slate-700">{copied === report.id ? 'Copiado' : 'Copiar'}</button>
-              <button className="rounded-xl border border-slate-200 py-2 text-xs font-black text-slate-700">PDF fake</button>
+              <button className="rounded-xl border border-slate-200 py-2 text-xs font-black text-slate-700">PDF</button>
             </div>
           </div>
         ))}
@@ -2302,7 +2765,7 @@ function ReportsPage() {
           <div className="mt-4 whitespace-pre-line rounded-2xl bg-slate-50 p-5 text-sm leading-7 text-slate-700">{selected.content}</div>
           <div className="mt-5 flex gap-2">
             <button onClick={() => copyReport(selected)} className="rounded-2xl bg-sky-950 px-5 py-3 text-sm font-black text-white">Copiar texto</button>
-            <button className="rounded-2xl border border-slate-200 px-5 py-3 text-sm font-black text-slate-700">Baixar PDF fake</button>
+            <button className="rounded-2xl border border-slate-200 px-5 py-3 text-sm font-black text-slate-700">Baixar PDF</button>
           </div>
         </Modal>
       )}
@@ -2524,7 +2987,7 @@ function SupportPage() {
           <div className="mt-5 grid gap-4">
             <input value={form.subject} onChange={(event) => setForm({ ...form, subject: event.target.value })} placeholder="Assunto" className="h-12 rounded-2xl border border-slate-200 px-4 font-semibold outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
             <select value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} className="h-12 rounded-2xl border border-slate-200 px-4 font-semibold outline-none">
-              {['Acesso', 'Materiais', 'Certificados', 'Pagamento fake', 'Comunidade'].map((item) => <option key={item}>{item}</option>)}
+              {['Acesso', 'Materiais', 'Certificados', 'Pagamento', 'Comunidade'].map((item) => <option key={item}>{item}</option>)}
             </select>
             <textarea value={form.message} onChange={(event) => setForm({ ...form, message: event.target.value })} placeholder="Mensagem" rows={6} className="rounded-2xl border border-slate-200 p-4 font-semibold outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
             <button className="h-12 rounded-2xl bg-sky-950 font-black text-white">Enviar chamado</button>
@@ -2563,12 +3026,12 @@ function AdminDashboard() {
       <SectionTitle title="Dashboard administrativo" />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard icon="UsersRound" label="Total de alunos" value="214" detail={`${students.filter((student) => student.status === 'ativo').length + 181} ativos`} />
-        <MetricCard icon="MonitorPlay" label="Aulas cadastradas" value={`${lessons.length + 30}`} detail={`${lessons.filter((lesson) => lesson.adminStatus === 'publicada').length} publicadas na demo`} />
+        <MetricCard icon="MonitorPlay" label="Aulas cadastradas" value={`${lessons.length + 30}`} detail={`${lessons.filter((lesson) => lesson.adminStatus === 'publicada').length} publicadas`} />
         <MetricCard icon="GraduationCap" label="Professores" value={`${teachers.length + 6}`} detail="especialistas vinculados" />
         <MetricCard icon="Library" label="Especialidades" value={`${specialties.length}`} detail="cursos ativos" />
         <MetricCard icon="MessageCircle" label="Comentários pendentes" value={`${comments.filter((comment) => comment.status === 'pendente').length}`} detail="aguardando resposta" />
         <MetricCard icon="FileText" label="Materiais" value={`${reports.length + 34}`} detail="PDFs, laudos e checklists" />
-        <MetricCard icon="WalletCards" label="Faturamento estimado" value="R$ 72.400" detail="recorrência mensal fake" />
+        <MetricCard icon="WalletCards" label="Faturamento estimado" value="R$ 72.400" detail="recorrência mensal" />
         <MetricCard icon="CheckCircle2" label="Taxa média" value="74%" detail="conclusão dos módulos" />
       </div>
 
@@ -2636,14 +3099,19 @@ const textareaClass = 'w-full rounded-2xl border border-slate-200 bg-white p-4 t
 
 function AdminLessonsPage() {
   const { lessons, setLessons, teachers, specialties } = useData()
+  const orderedSpecialties = getOrderedSpecialties(specialties)
   const [editingId, setEditingId] = useState('')
   const [selectedVideoFile, setSelectedVideoFile] = useState<File | null>(null)
+  const [selectedMaterialFiles, setSelectedMaterialFiles] = useState<File[]>([])
   const [feedback, setFeedback] = useState('')
+  const [youtubePreview, setYoutubePreview] = useState<YouTubeImportPreview | null>(null)
+  const [youtubeImporting, setYoutubeImporting] = useState(false)
+  const lastImportedVideoRef = useRef('')
   const [form, setForm] = useState({
     title: '',
     description: '',
     teacherId: teachers[0]?.id ?? '',
-    specialtySlug: specialties[0]?.slug ?? '',
+    specialtySlug: orderedSpecialties[0]?.slug ?? '',
     module: '',
     duration: '',
     adminStatus: 'rascunho' as AdminStatus,
@@ -2653,19 +3121,28 @@ function AdminLessonsPage() {
     videoAssetId: '',
     videoAssetName: '',
     thumbnail: 'doppler',
+    coverImage: '',
     materials: 'Mapa mental, PDF complementar',
+    quizTitle: '',
+    quizQuestions: '',
+    accessMode: 'herdar' as AccessMode | 'herdar',
+    accessAudience: 'pagantes' as AccessAudience,
+    accessPrice: '',
   })
 
   const resetForm = () => {
     setEditingId('')
     setSelectedVideoFile(null)
+    setSelectedMaterialFiles([])
+    setYoutubePreview(null)
+    lastImportedVideoRef.current = ''
     setForm({
       title: '',
       description: '',
-      teacherId: teachers[0]?.id ?? '',
-      specialtySlug: specialties[0]?.slug ?? '',
-      module: '',
-      duration: '',
+        teacherId: teachers[0]?.id ?? '',
+        specialtySlug: orderedSpecialties[0]?.slug ?? '',
+        module: '',
+        duration: '',
       adminStatus: 'rascunho',
       releaseDate: addDaysToDateKey(7),
       videoSource: 'youtube',
@@ -2673,9 +3150,53 @@ function AdminLessonsPage() {
       videoAssetId: '',
       videoAssetName: '',
       thumbnail: 'doppler',
-      materials: 'Mapa mental, PDF complementar',
-    })
+      coverImage: '',
+        materials: 'Mapa mental, PDF complementar',
+        quizTitle: '',
+        quizQuestions: '',
+        accessMode: 'herdar',
+        accessAudience: 'pagantes',
+        accessPrice: '',
+      })
   }
+
+  useEffect(() => {
+    const youtubeId = form.videoSource === 'youtube' ? getYouTubeId(form.videoUrl) : null
+    if (!youtubeId) {
+      setYoutubePreview(null)
+      return
+    }
+
+    const specialtyName = getSpecialty(form.specialtySlug, specialties).name
+    const videoKey = `${youtubeId}-${form.specialtySlug}`
+    if (lastImportedVideoRef.current === videoKey && youtubePreview) return
+
+    let active = true
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        setYoutubeImporting(true)
+        const preview = await fetchYouTubeImportPreview(form.videoUrl, specialtyName)
+        if (!active || !preview) return
+        lastImportedVideoRef.current = videoKey
+        setYoutubePreview(preview)
+        setForm((current) => ({
+          ...current,
+          title: current.title.trim() ? current.title : preview.title,
+          description: current.description.trim() ? current.description : preview.suggestedDescription,
+          coverImage: current.coverImage.trim() ? current.coverImage : preview.thumbnailUrl,
+        }))
+      } catch {
+        if (active) setYoutubePreview(null)
+      } finally {
+        if (active) setYoutubeImporting(false)
+      }
+    }, 500)
+
+    return () => {
+      active = false
+      window.clearTimeout(timeoutId)
+    }
+  }, [form.specialtySlug, form.videoSource, form.videoUrl, specialties, youtubePreview])
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -2696,7 +3217,7 @@ function AdminLessonsPage() {
           await saveLessonVideoAsset(nextVideoAssetId, selectedVideoFile)
           nextVideoAssetName = selectedVideoFile.name
         } catch {
-          setFeedback('O vídeo direto não pôde ser salvo nesta máquina. Para a demo, use um arquivo menor ou publique por YouTube.')
+          setFeedback('O vídeo direto não pôde ser salvo nesta máquina. Use um arquivo menor ou publique por YouTube.')
           return
         }
       }
@@ -2735,6 +3256,7 @@ function AdminLessonsPage() {
       views: previousLesson?.views ?? 0,
       tags: [getSpecialty(form.specialtySlug, specialties).name, form.module],
       thumbnail: form.thumbnail,
+      coverImage: form.coverImage.trim(),
       videoSource: form.videoSource,
       videoUrl: form.videoSource === 'youtube' ? form.videoUrl : '',
       videoAssetId: form.videoSource === 'upload' ? nextVideoAssetId : undefined,
@@ -2742,14 +3264,25 @@ function AdminLessonsPage() {
       materials: form.materials.split(',').map((title, index) => ({
         id: `material-${Date.now()}-${index}`,
         title: title.trim(),
-        type: title.toLowerCase().includes('laudo') ? 'Modelo de laudo' : title.toLowerCase().includes('check') ? 'Checklist prático' : 'PDF complementar',
-      })),
+        type: getMaterialTypeFromTitle(title),
+      })).concat(
+        selectedMaterialFiles.map((file, index) => ({
+          id: `arquivo-${Date.now()}-${index}`,
+          title: file.name,
+          type: getMaterialTypeFromTitle(file.name),
+        })),
+      ),
       learning: ['Objetivo prático da aula', 'Principais achados e armadilhas', 'Aplicação no laudo e na conduta'],
+      quizTitle: form.quizTitle.trim() || undefined,
+      quizQuestions: form.quizQuestions.split('\n').map((item) => item.trim()).filter(Boolean),
+      accessMode: form.accessMode,
+      accessAudience: form.accessAudience,
+      accessPrice: form.accessPrice.trim(),
     }
     setLessons((current) => (editingId ? current.map((lesson) => (lesson.id === editingId ? payload : lesson)) : [payload, ...current]))
     setFeedback(
       form.videoSource === 'upload'
-        ? 'Aula salva com vídeo direto neste navegador para a demo local.'
+        ? 'Aula salva com vídeo direto neste navegador.'
         : 'Aula salva com link do YouTube e pronta para entrar na trilha.',
     )
     resetForm()
@@ -2758,6 +3291,9 @@ function AdminLessonsPage() {
   const editLesson = (lesson: Lesson) => {
     setEditingId(lesson.id)
     setSelectedVideoFile(null)
+    setSelectedMaterialFiles([])
+    setYoutubePreview(null)
+    lastImportedVideoRef.current = getYouTubeId(lesson.videoUrl) ? `${getYouTubeId(lesson.videoUrl)}-${lesson.specialtySlug}` : ''
     setForm({
       title: lesson.title,
       description: lesson.description,
@@ -2772,7 +3308,13 @@ function AdminLessonsPage() {
       videoAssetId: lesson.videoAssetId ?? '',
       videoAssetName: lesson.videoAssetName ?? '',
       thumbnail: lesson.thumbnail,
+      coverImage: lesson.coverImage ?? '',
       materials: lesson.materials.map((material) => material.title).join(', '),
+      quizTitle: lesson.quizTitle ?? '',
+      quizQuestions: (lesson.quizQuestions ?? []).join('\n'),
+      accessMode: lesson.accessMode ?? 'herdar',
+      accessAudience: lesson.accessAudience ?? 'pagantes',
+      accessPrice: lesson.accessPrice ?? '',
     })
   }
 
@@ -2801,12 +3343,37 @@ function AdminLessonsPage() {
             <Field label="Descrição"><textarea required rows={4} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className={textareaClass} /></Field>
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="Professor"><select value={form.teacherId} onChange={(e) => setForm({ ...form, teacherId: e.target.value })} className={inputClass}>{teachers.map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.name}</option>)}</select></Field>
-              <Field label="Especialidade"><select value={form.specialtySlug} onChange={(e) => setForm({ ...form, specialtySlug: e.target.value })} className={inputClass}>{specialties.map((specialty) => <option key={specialty.id} value={specialty.slug}>{specialty.name}</option>)}</select></Field>
+              <Field label="Especialidade"><select value={form.specialtySlug} onChange={(e) => setForm({ ...form, specialtySlug: e.target.value })} className={inputClass}>{orderedSpecialties.map((specialty) => <option key={specialty.id} value={specialty.slug}>{specialty.name}</option>)}</select></Field>
               <Field label="Módulo"><input value={form.module} onChange={(e) => setForm({ ...form, module: e.target.value })} className={inputClass} /></Field>
               <Field label="Duração"><input value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} className={inputClass} /></Field>
               <Field label="Status"><select value={form.adminStatus} onChange={(e) => setForm({ ...form, adminStatus: e.target.value as AdminStatus })} className={inputClass}><option value="publicada">Publicada</option><option value="rascunho">Rascunho</option><option value="em breve">Em breve</option></select></Field>
               <Field label="Data de liberação"><input type="date" value={form.releaseDate} onChange={(e) => setForm({ ...form, releaseDate: e.target.value })} className={inputClass} /></Field>
             </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Regra de acesso da aula">
+                <select value={form.accessMode} onChange={(e) => setForm({ ...form, accessMode: e.target.value as AccessMode | 'herdar' })} className={inputClass}>
+                  {(['herdar', 'gratuita', 'inclusa', 'avulsa'] as const).map((mode) => (
+                    <option key={mode} value={mode}>{accessModeLabels[mode]}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Quem pode ver">
+                <select value={form.accessAudience} onChange={(e) => setForm({ ...form, accessAudience: e.target.value as AccessAudience })} className={inputClass}>
+                  <option value="pagantes">Somente alunos pagantes</option>
+                  <option value="todos">Todos os cadastrados</option>
+                </select>
+              </Field>
+            </div>
+            {form.accessMode === 'avulsa' && (
+              <Field label="Valor da compra avulsa">
+                <input value={form.accessPrice} onChange={(e) => setForm({ ...form, accessPrice: e.target.value })} className={inputClass} placeholder="R$ 97,00" />
+              </Field>
+            )}
+            {form.accessMode === 'herdar' && (
+              <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
+                Esta aula vai seguir automaticamente a regra da especialidade: <span className="font-black text-slate-950">{getSpecialtyAccessSummary(getSpecialty(form.specialtySlug, specialties))}</span>.
+              </div>
+            )}
             <Field label="Origem do vídeo">
               <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1">
                 {([
@@ -2827,6 +3394,47 @@ function AdminLessonsPage() {
             {form.videoSource === 'youtube' ? (
               <Field label="Link do vídeo">
                 <input value={form.videoUrl} onChange={(e) => setForm({ ...form, videoUrl: e.target.value })} className={inputClass} placeholder="https://www.youtube.com/watch?v=..." />
+                <p className="mt-2 text-xs font-semibold text-slate-500">
+                  Se você não enviar uma capa personalizada, a plataforma usa automaticamente a prévia do YouTube nos cards.
+                </p>
+                {youtubeImporting ? (
+                  <div className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm font-bold text-slate-500">
+                    Puxando título e capa do YouTube...
+                  </div>
+                ) : null}
+                {youtubePreview ? (
+                  <div className="mt-3 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+                    <div className="grid gap-3 p-3 sm:grid-cols-[140px_1fr]">
+                      <div className="overflow-hidden rounded-xl bg-slate-200">
+                        {youtubePreview.thumbnailUrl ? (
+                          <img src={youtubePreview.thumbnailUrl} alt={youtubePreview.title} className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="grid h-full min-h-24 place-items-center text-slate-400">Sem imagem</div>
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-[0.14em] text-sky-700">Prévia do YouTube</p>
+                        <p className="mt-1 text-sm font-black text-slate-950">{youtubePreview.title}</p>
+                        <p className="mt-1 text-xs font-semibold text-slate-500">{youtubePreview.authorName}</p>
+                        <p className="mt-2 text-xs leading-5 text-slate-600">{youtubePreview.suggestedDescription}</p>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setForm((current) => ({
+                              ...current,
+                              title: youtubePreview.title,
+                              description: youtubePreview.suggestedDescription,
+                              coverImage: current.coverImage.trim() || youtubePreview.thumbnailUrl,
+                            }))
+                          }
+                          className="mt-3 rounded-xl bg-white px-3 py-2 text-xs font-black text-sky-900 ring-1 ring-slate-200"
+                        >
+                          Aplicar sugestão novamente
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </Field>
             ) : (
               <Field label="Vídeo direto">
@@ -2853,9 +3461,50 @@ function AdminLessonsPage() {
                 </div>
               </Field>
             )}
+            <Field label="Capa personalizada (opcional)">
+              <input
+                value={form.coverImage}
+                onChange={(e) => setForm({ ...form, coverImage: e.target.value })}
+                className={inputClass}
+                placeholder="https://... ou deixe em branco para usar a prévia do vídeo"
+              />
+            </Field>
             <Field label="Thumbnail"><select value={form.thumbnail} onChange={(e) => setForm({ ...form, thumbnail: e.target.value })} className={inputClass}>{['doppler', 'vascular', 'mama', 'gineco', 'obstetrico', 'tireoide', 'abdome', 'pocus', 'partes'].map((item) => <option key={item}>{item}</option>)}</select></Field>
-            <Field label="Materiais anexos fake"><input type="file" className={inputClass} /></Field>
+            <Field label="Arquivos para os alunos">
+              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4">
+                <input
+                  type="file"
+                  multiple
+                  accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.jpg,.jpeg,.png"
+                  className={inputClass}
+                  onChange={(event) => setSelectedMaterialFiles(Array.from(event.target.files ?? []))}
+                />
+                {selectedMaterialFiles.length ? (
+                  <div className="mt-3 space-y-2">
+                    {selectedMaterialFiles.map((file) => (
+                      <div key={file.name} className="rounded-xl bg-white px-3 py-2 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">
+                        {file.name}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs font-semibold text-slate-500">
+                    PDF, checklist, resumo, mapa mental ou qualquer material complementar da aula.
+                  </p>
+                )}
+              </div>
+            </Field>
             <Field label="Materiais listados"><input value={form.materials} onChange={(e) => setForm({ ...form, materials: e.target.value })} className={inputClass} /></Field>
+            <Field label="Quiz da aula (opcional)">
+              <input value={form.quizTitle} onChange={(e) => setForm({ ...form, quizTitle: e.target.value })} className={inputClass} placeholder="Quiz rápido: fundamentos da aula" />
+              <textarea
+                rows={4}
+                value={form.quizQuestions}
+                onChange={(e) => setForm({ ...form, quizQuestions: e.target.value })}
+                className={clsx(textareaClass, 'mt-3')}
+                placeholder={'Uma pergunta por linha\nEx.: Qual ajuste reduz aliasing no Doppler?\nEx.: Quando subir um BI-RADS?'}
+              />
+            </Field>
             {feedback && <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700">{feedback}</div>}
             <button className="h-12 rounded-2xl bg-sky-950 font-black text-white">{editingId ? 'Salvar edição' : 'Criar aula'}</button>
           </div>
@@ -2873,6 +3522,7 @@ function AdminLessonsPage() {
                     <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold text-slate-500">
                       <span className="rounded-full bg-slate-100 px-3 py-1">{getVideoSourceLabel(lesson.videoSource)}</span>
                       <span className="rounded-full bg-slate-100 px-3 py-1">{formatDate(lesson.releaseDate)}</span>
+                      <span className="rounded-full bg-slate-100 px-3 py-1">{getLessonAccessSummary(lesson, specialties)}</span>
                       {lesson.videoSource === 'upload' && lesson.videoAssetName && <span className="rounded-full bg-slate-100 px-3 py-1">{lesson.videoAssetName}</span>}
                     </div>
                   </div>
@@ -2917,29 +3567,93 @@ function AdminLessonsPage() {
 
 function AdminSpecialtiesPage() {
   const { specialties, setSpecialties } = useData()
-  const [form, setForm] = useState({ name: '', description: '', color: '#075985', icon: 'BookOpen', order: specialties.length + 1, status: 'ativo' as Specialty['status'] })
+  const [editingId, setEditingId] = useState('')
+  const orderedSpecialties = getOrderedSpecialties(specialties)
+  const [form, setForm] = useState({
+    name: '',
+    description: '',
+    color: '#075985',
+    icon: 'BookOpen',
+    order: specialties.length + 1,
+    status: 'ativo' as Specialty['status'],
+    accessMode: 'inclusa' as AccessMode,
+    accessAudience: 'pagantes' as AccessAudience,
+    accessPrice: '',
+  })
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    const specialty: Specialty = { id: makeId('esp', form.name), slug: makeId('', form.name).replace(/^-/, ''), ...form, teacherIds: [] }
-    setSpecialties((current) => [...current, specialty])
-    setForm({ ...form, name: '', description: '', order: form.order + 1 })
+    const currentSpecialty = specialties.find((item) => item.id === editingId)
+    const specialty: Specialty = normalizeSpecialtyAccess({
+      id: editingId || makeId('esp', form.name),
+      slug: makeId('', form.name).replace(/^-/, ''),
+      name: form.name,
+      description: form.description,
+      color: form.color,
+      icon: form.icon,
+      order: form.order,
+      status: form.status,
+      accessMode: form.accessMode,
+      accessAudience: form.accessAudience,
+      accessPrice: form.accessPrice.trim(),
+      teacherIds: currentSpecialty?.teacherIds ?? [],
+    })
+    setSpecialties((current) => {
+      const next = editingId ? current.map((item) => (item.id === editingId ? { ...item, ...specialty } : item)) : [...current, specialty]
+      return placeSpecialtyAtOrder(next, specialty.id, specialty.order)
+    })
+    setEditingId('')
+    setForm({
+      name: '',
+      description: '',
+      color: '#075985',
+      icon: 'BookOpen',
+      order: specialties.length + (editingId ? 0 : 1) + 1,
+      status: 'ativo',
+      accessMode: 'inclusa',
+      accessAudience: 'pagantes',
+      accessPrice: '',
+    })
   }
   return (
     <CrudLayout title="Gerenciar cursos e especialidades">
       <form onSubmit={submit} className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-xl font-black text-slate-950">Criar categoria</h2>
+        <h2 className="text-xl font-black text-slate-950">{editingId ? 'Editar categoria' : 'Criar categoria'}</h2>
         <div className="mt-5 grid gap-4">
           <Field label="Nome"><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputClass} /></Field>
           <Field label="Descrição"><textarea required rows={4} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className={textareaClass} /></Field>
           <Field label="Cor"><input type="color" value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} className="h-11 w-full rounded-2xl border border-slate-200 p-1" /></Field>
           <Field label="Ícone"><input value={form.icon} onChange={(e) => setForm({ ...form, icon: e.target.value })} className={inputClass} /></Field>
-          <Field label="Ordem"><input type="number" value={form.order} onChange={(e) => setForm({ ...form, order: Number(e.target.value) })} className={inputClass} /></Field>
+          <Field label="Posição da especialidade">
+            <select value={form.order} onChange={(e) => setForm({ ...form, order: Number(e.target.value) })} className={inputClass}>
+              {Array.from({ length: Math.max(orderedSpecialties.length, 1) + (editingId ? 0 : 1) }, (_, index) => index + 1).map((orderValue) => (
+                <option key={orderValue} value={orderValue}>Posição {orderValue}</option>
+              ))}
+            </select>
+          </Field>
           <Field label="Status"><select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as Specialty['status'] })} className={inputClass}><option>ativo</option><option>inativo</option></select></Field>
-          <button className="h-12 rounded-2xl bg-sky-950 font-black text-white">Criar especialidade</button>
+          <Field label="Acesso da especialidade">
+            <select value={form.accessMode} onChange={(e) => setForm({ ...form, accessMode: e.target.value as AccessMode })} className={inputClass}>
+              {(['inclusa', 'gratuita', 'avulsa'] as const).map((mode) => (
+                <option key={mode} value={mode}>{accessModeLabels[mode]}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Público">
+            <select value={form.accessAudience} onChange={(e) => setForm({ ...form, accessAudience: e.target.value as AccessAudience })} className={inputClass}>
+              <option value="pagantes">Somente alunos pagantes</option>
+              <option value="todos">Todos os cadastrados</option>
+            </select>
+          </Field>
+          {form.accessMode === 'avulsa' && (
+            <Field label="Valor da especialidade">
+              <input value={form.accessPrice} onChange={(e) => setForm({ ...form, accessPrice: e.target.value })} className={inputClass} placeholder="R$ 197,00" />
+            </Field>
+          )}
+          <button className="h-12 rounded-2xl bg-sky-950 font-black text-white">{editingId ? 'Salvar categoria' : 'Criar especialidade'}</button>
         </div>
       </form>
       <div className="grid gap-3">
-        {specialties.map((specialty) => {
+        {orderedSpecialties.map((specialty) => {
           return (
             <div key={specialty.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center justify-between gap-4">
@@ -2948,11 +3662,53 @@ function AdminSpecialtiesPage() {
                   <div>
                     <p className="font-black text-slate-950">{specialty.name}</p>
                     <p className="text-sm font-semibold text-slate-500">Ordem {specialty.order} · {specialty.status}</p>
+                    <p className="mt-1 text-xs font-bold text-slate-500">{getSpecialtyAccessSummary(specialty)}</p>
                   </div>
                 </div>
-                <button onClick={() => setSpecialties((current) => current.map((item) => item.id === specialty.id ? { ...item, status: item.status === 'ativo' ? 'inativo' : 'ativo' } : item))} className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">
-                  Ativar/inativar
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => setSpecialties((current) => reorderSpecialties(current, specialty.id, 'up'))} className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">
+                    Subir
+                  </button>
+                  <button onClick={() => setSpecialties((current) => reorderSpecialties(current, specialty.id, 'down'))} className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">
+                    Descer
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEditingId(specialty.id)
+                      setForm({
+                        name: specialty.name,
+                        description: specialty.description,
+                        color: specialty.color,
+                        icon: specialty.icon,
+                        order: specialty.order,
+                        status: specialty.status,
+                        accessMode: specialty.accessMode ?? 'inclusa',
+                        accessAudience: specialty.accessAudience ?? 'pagantes',
+                        accessPrice: specialty.accessPrice ?? '',
+                      })
+                    }}
+                    className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700"
+                  >
+                    Editar
+                  </button>
+                  <select
+                    value={specialty.order}
+                    onChange={(e) => setSpecialties((current) => placeSpecialtyAtOrder(current, specialty.id, Number(e.target.value)))}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700"
+                  >
+                    {orderedSpecialties.map((_, index) => (
+                      <option key={`${specialty.id}-${index + 1}`} value={index + 1}>
+                        Posição {index + 1}
+                      </option>
+                    ))}
+                  </select>
+                  <button onClick={() => setSpecialties((current) => current.map((item) => item.id === specialty.id ? { ...item, status: item.status === 'ativo' ? 'inativo' : 'ativo' } : item))} className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">
+                    Ativar/inativar
+                  </button>
+                  <button onClick={() => setSpecialties((current) => current.filter((item) => item.id !== specialty.id))} className="rounded-xl bg-red-50 px-3 py-2 text-xs font-black text-red-700">
+                    Excluir
+                  </button>
+                </div>
               </div>
             </div>
           )
@@ -2974,24 +3730,41 @@ function CrudLayout({ title, children }: { title: string; children: ReactNode[] 
 
 function AdminTeachersPage() {
   const { teachers, setTeachers, specialties, lessons } = useData()
-  const [form, setForm] = useState({ name: '', title: '', crm: '', bio: '', avatar: 'DR', specialties: 'Doppler' })
+  const [editingId, setEditingId] = useState('')
+  const [form, setForm] = useState({ name: '', title: '', crm: '', bio: '', avatar: 'DR', photo: '', specialties: 'Doppler' })
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    setTeachers((current) => [...current, { id: makeId('prof', form.name), ...form, specialties: form.specialties.split(',').map((item) => item.trim()), lessonIds: [] }])
-    setForm({ name: '', title: '', crm: '', bio: '', avatar: 'DR', specialties: specialties[0]?.name ?? '' })
+    const currentTeacher = teachers.find((teacher) => teacher.id === editingId)
+    const payload: Teacher = {
+      id: editingId || makeId('prof', form.name),
+      name: form.name,
+      title: form.title,
+      crm: form.crm,
+      bio: form.bio,
+      avatar: form.avatar,
+      photo: form.photo || undefined,
+      specialties: form.specialties.split(',').map((item) => item.trim()).filter(Boolean),
+      lessonIds: currentTeacher?.lessonIds ?? [],
+      lattes: currentTeacher?.lattes,
+      credentials: currentTeacher?.credentials,
+    }
+    setTeachers((current) => (editingId ? current.map((teacher) => (teacher.id === editingId ? payload : teacher)) : [...current, payload]))
+    setEditingId('')
+    setForm({ name: '', title: '', crm: '', bio: '', avatar: 'DR', photo: '', specialties: specialties[0]?.name ?? '' })
   }
   return (
     <CrudLayout title="Gerenciar professores">
       <form onSubmit={submit} className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-xl font-black text-slate-950">Cadastrar professor</h2>
+        <h2 className="text-xl font-black text-slate-950">{editingId ? 'Editar professor' : 'Cadastrar professor'}</h2>
         <div className="mt-5 grid gap-4">
           <Field label="Nome"><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputClass} /></Field>
           <Field label="Título"><input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className={inputClass} /></Field>
-          <Field label="CRM fake"><input value={form.crm} onChange={(e) => setForm({ ...form, crm: e.target.value })} className={inputClass} /></Field>
+          <Field label="CRM"><input value={form.crm} onChange={(e) => setForm({ ...form, crm: e.target.value })} className={inputClass} /></Field>
           <Field label="Bio"><textarea rows={4} value={form.bio} onChange={(e) => setForm({ ...form, bio: e.target.value })} className={textareaClass} /></Field>
-          <Field label="Foto fake/avatar"><input value={form.avatar} onChange={(e) => setForm({ ...form, avatar: e.target.value })} className={inputClass} /></Field>
+          <Field label="Foto (URL opcional)"><input value={form.photo} onChange={(e) => setForm({ ...form, photo: e.target.value })} className={inputClass} placeholder="/people/antonio-gadelha.png" /></Field>
+          <Field label="Iniciais"><input value={form.avatar} onChange={(e) => setForm({ ...form, avatar: e.target.value })} className={inputClass} /></Field>
           <Field label="Especialidades"><input value={form.specialties} onChange={(e) => setForm({ ...form, specialties: e.target.value })} className={inputClass} /></Field>
-          <button className="h-12 rounded-2xl bg-sky-950 font-black text-white">Cadastrar professor</button>
+          <button className="h-12 rounded-2xl bg-sky-950 font-black text-white">{editingId ? 'Salvar professor' : 'Cadastrar professor'}</button>
         </div>
       </form>
       <div className="grid gap-3 lg:grid-cols-2">
@@ -3001,7 +3774,7 @@ function AdminTeachersPage() {
               <TeacherAvatar teacher={teacher} size="md" />
               <div>
                 <p className="font-black text-slate-950">{teacher.name}</p>
-                <p className="text-sm font-semibold text-slate-500">{teacher.title} · {teacher.crm}</p>
+                <p className="text-sm font-semibold text-slate-500">{teacher.title}{teacher.crm ? ` · ${teacher.crm}` : ''}</p>
                 <p className="mt-2 text-sm leading-6 text-slate-600">{teacher.bio}</p>
                 {teacher.credentials && (
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -3011,6 +3784,28 @@ function AdminTeachersPage() {
                   </div>
                 )}
                 <p className="mt-3 text-xs font-black uppercase tracking-[0.14em] text-slate-400">Aulas vinculadas: {lessons.filter((lesson) => lesson.teacherId === teacher.id).length}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => {
+                      setEditingId(teacher.id)
+                      setForm({
+                        name: teacher.name,
+                        title: teacher.title,
+                        crm: teacher.crm,
+                        bio: teacher.bio,
+                        avatar: teacher.avatar,
+                        photo: teacher.photo ?? '',
+                        specialties: teacher.specialties.join(', '),
+                      })
+                    }}
+                    className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700"
+                  >
+                    Editar
+                  </button>
+                  <button onClick={() => setTeachers((current) => current.filter((item) => item.id !== teacher.id))} className="rounded-xl bg-red-50 px-3 py-2 text-xs font-black text-red-700">
+                    Excluir
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -3022,11 +3817,142 @@ function AdminTeachersPage() {
 
 function AdminStudentsPage() {
   const { students, setStudents } = useData()
+  const [query, setQuery] = useState('')
+  const [selectedId, setSelectedId] = useState(students[0]?.id ?? '')
+  const [editingId, setEditingId] = useState('')
+  const [form, setForm] = useState({
+    name: '',
+    email: '',
+    status: 'ativo' as Student['status'],
+    plan: 'Aluno individual' as Student['plan'],
+    progress: 0,
+    lastAccess: 'hoje',
+    points: 0,
+    completedLessons: 0,
+    comments: 0,
+    badges: '',
+    interest: '',
+  })
+
+  const filteredStudents = students.filter((student) => {
+    const haystack = `${student.name} ${student.email} ${student.plan} ${student.interest}`.toLowerCase()
+    return haystack.includes(query.toLowerCase())
+  })
+
+  const selectedStudent = students.find((student) => student.id === selectedId) ?? filteredStudents[0] ?? students[0]
+
+  const startEdit = (student: Student) => {
+    setSelectedId(student.id)
+    setEditingId(student.id)
+    setForm({
+      name: student.name,
+      email: student.email,
+      status: student.status,
+      plan: student.plan,
+      progress: student.progress,
+      lastAccess: student.lastAccess,
+      points: student.points,
+      completedLessons: student.completedLessons,
+      comments: student.comments,
+      badges: student.badges.join(', '),
+      interest: student.interest,
+    })
+  }
+
+  const resetForm = () => {
+    setEditingId('')
+    setForm({
+      name: '',
+      email: '',
+      status: 'ativo',
+      plan: 'Aluno individual',
+      progress: 0,
+      lastAccess: 'hoje',
+      points: 0,
+      completedLessons: 0,
+      comments: 0,
+      badges: '',
+      interest: '',
+    })
+  }
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault()
+    const payload: Student = {
+      id: editingId || makeId('aluno', form.name),
+      name: form.name,
+      email: form.email,
+      status: form.status,
+      plan: form.plan,
+      progress: Number(form.progress),
+      lastAccess: form.lastAccess,
+      points: Number(form.points),
+      completedLessons: Number(form.completedLessons),
+      comments: Number(form.comments),
+      badges: form.badges.split(',').map((item) => item.trim()).filter(Boolean),
+      interest: form.interest,
+    }
+    setStudents((current) => (editingId ? current.map((student) => (student.id === editingId ? payload : student)) : [payload, ...current]))
+    setSelectedId(payload.id)
+    resetForm()
+  }
+
   return (
     <div>
       <SectionTitle title="Alunos" />
-      <div className="grid gap-3 md:hidden">
-        {students.map((student) => (
+      <div className="mb-5 grid gap-4 rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm lg:grid-cols-[320px_1fr]">
+        <form onSubmit={submit} className="space-y-4">
+          <div>
+            <p className="text-lg font-black text-slate-950">{editingId ? 'Editar aluno' : 'Cadastrar aluno'}</p>
+            <p className="mt-1 text-sm font-semibold text-slate-500">Busca rápida, edição simples e cadastro manual quando necessário.</p>
+          </div>
+          <Field label="Nome"><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputClass} /></Field>
+          <Field label="E-mail"><input required value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className={inputClass} /></Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Plano"><select value={form.plan} onChange={(e) => setForm({ ...form, plan: e.target.value as Student['plan'] })} className={inputClass}>{['Aluno individual', 'Turma presencial', 'Assinatura mensal', 'Acesso vitalício', 'Professor/Admin'].map((item) => <option key={item}>{item}</option>)}</select></Field>
+            <Field label="Status"><select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as Student['status'] })} className={inputClass}><option value="ativo">ativo</option><option value="inativo">inativo</option></select></Field>
+            <Field label="Progresso (%)"><input type="number" min="0" max="100" value={form.progress} onChange={(e) => setForm({ ...form, progress: Number(e.target.value) })} className={inputClass} /></Field>
+            <Field label="Último acesso"><input value={form.lastAccess} onChange={(e) => setForm({ ...form, lastAccess: e.target.value })} className={inputClass} /></Field>
+            <Field label="Pontos"><input type="number" min="0" value={form.points} onChange={(e) => setForm({ ...form, points: Number(e.target.value) })} className={inputClass} /></Field>
+            <Field label="Aulas concluídas"><input type="number" min="0" value={form.completedLessons} onChange={(e) => setForm({ ...form, completedLessons: Number(e.target.value) })} className={inputClass} /></Field>
+          </div>
+          <Field label="Interesse principal"><input value={form.interest} onChange={(e) => setForm({ ...form, interest: e.target.value })} className={inputClass} /></Field>
+          <Field label="Badges"><input value={form.badges} onChange={(e) => setForm({ ...form, badges: e.target.value })} className={inputClass} placeholder="Aluno ativo, Doppler, Obstetrícia" /></Field>
+          <div className="flex gap-2">
+            <button className="h-12 flex-1 rounded-2xl bg-sky-950 font-black text-white">{editingId ? 'Salvar aluno' : 'Cadastrar aluno'}</button>
+            {editingId ? (
+              <button type="button" onClick={resetForm} className="h-12 rounded-2xl border border-slate-200 px-4 font-black text-slate-700">
+                Cancelar
+              </button>
+            ) : null}
+          </div>
+        </form>
+
+        <div className="space-y-4">
+          <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+            <div className="rounded-2xl bg-slate-50 p-4">
+              <label className="block">
+                <span className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Buscar aluno</span>
+                <input value={query} onChange={(e) => setQuery(e.target.value)} className={clsx(inputClass, 'mt-2 bg-white')} placeholder="Nome, e-mail, plano ou interesse" />
+              </label>
+            </div>
+            {selectedStudent ? (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Resumo do aluno</p>
+                <p className="mt-2 text-lg font-black text-slate-950">{selectedStudent.name}</p>
+                <p className="text-sm font-semibold text-slate-500">{selectedStudent.email}</p>
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                  <InfoLine label="Plano" value={selectedStudent.plan} />
+                  <InfoLine label="Interesse" value={selectedStudent.interest} />
+                  <InfoLine label="Pontos" value={`${selectedStudent.points}`} />
+                  <InfoLine label="Comentários" value={`${selectedStudent.comments}`} />
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="grid gap-3 md:hidden">
+            {filteredStudents.map((student) => (
           <div key={student.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
@@ -3046,31 +3972,46 @@ function AdminStudentsPage() {
               </div>
               <ProgressBar value={student.progress} />
             </div>
-            <button
-              onClick={() => setStudents((current) => current.map((item) => item.id === student.id ? { ...item, status: item.status === 'ativo' ? 'inativo' : 'ativo' } : item))}
-              className="mt-4 w-full rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white"
-            >
-              Bloquear/liberar acesso
-            </button>
+            <div className="mt-4 flex gap-2">
+              <button onClick={() => startEdit(student)} className="flex-1 rounded-2xl bg-slate-100 px-4 py-3 text-sm font-black text-slate-700">
+                Editar
+              </button>
+              <button
+                onClick={() => setStudents((current) => current.map((item) => item.id === student.id ? { ...item, status: item.status === 'ativo' ? 'inativo' : 'ativo' } : item))}
+                className="flex-1 rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white"
+              >
+                Bloquear/liberar
+              </button>
+            </div>
           </div>
         ))}
       </div>
       <div className="hidden overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-sm md:block">
-        <div className="min-w-[760px]">
-          <div className="grid grid-cols-[1.4fr_1fr_.8fr_.8fr_.8fr] bg-slate-50 px-5 py-3 text-xs font-black uppercase tracking-[0.12em] text-slate-400">
-            <span>Aluno</span><span>Plano</span><span>Status</span><span>Progresso</span><span>Ação</span>
+        <div className="min-w-[980px]">
+          <div className="grid grid-cols-[1.4fr_1fr_.8fr_.9fr_1.1fr] bg-slate-50 px-5 py-3 text-xs font-black uppercase tracking-[0.12em] text-slate-400">
+            <span>Aluno</span><span>Plano</span><span>Status</span><span>Progresso</span><span>Ações</span>
           </div>
-          {students.map((student) => (
-            <div key={student.id} className="grid grid-cols-[1.4fr_1fr_.8fr_.8fr_.8fr] items-center border-t border-slate-100 px-5 py-4">
-              <div><p className="font-black text-slate-950">{student.name}</p><p className="text-sm font-semibold text-slate-500">{student.email}</p></div>
+          {filteredStudents.map((student) => (
+            <div key={student.id} className="grid grid-cols-[1.4fr_1fr_.8fr_.9fr_1.1fr] items-center border-t border-slate-100 px-5 py-4">
+              <button type="button" onClick={() => setSelectedId(student.id)} className="text-left">
+                <p className="font-black text-slate-950">{student.name}</p>
+                <p className="text-sm font-semibold text-slate-500">{student.email}</p>
+              </button>
               <p className="text-sm font-bold text-slate-600">{student.plan}</p>
               <StatusBadge status={student.status} />
               <div><p className="text-sm font-black text-slate-700">{student.progress}%</p><ProgressBar value={student.progress} className="mt-1" /></div>
-              <button onClick={() => setStudents((current) => current.map((item) => item.id === student.id ? { ...item, status: item.status === 'ativo' ? 'inativo' : 'ativo' } : item))} className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">
-                Bloquear/liberar
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => startEdit(student)} className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">
+                  Editar
+                </button>
+                <button onClick={() => setStudents((current) => current.map((item) => item.id === student.id ? { ...item, status: item.status === 'ativo' ? 'inativo' : 'ativo' } : item))} className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">
+                  Bloquear/liberar
+                </button>
+              </div>
             </div>
           ))}
+        </div>
+      </div>
         </div>
       </div>
     </div>
@@ -3161,7 +4102,7 @@ function AdminCasesPage() {
         specialtySlug: form.specialtySlug,
         level: form.level,
         description: form.description,
-        history: 'História clínica adicionada pelo administrador na versão final.',
+        history: 'História clínica registrada pelo administrador.',
         findings: form.findings,
         hypothesis: 'Hipótese diagnóstica a preencher.',
         discussion: form.discussion,
@@ -3183,7 +4124,7 @@ function AdminCasesPage() {
           <Field label="Descrição"><textarea rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className={textareaClass} /></Field>
           <Field label="Achados"><textarea rows={4} value={form.findings} onChange={(e) => setForm({ ...form, findings: e.target.value })} className={textareaClass} /></Field>
           <Field label="Discussão"><textarea rows={4} value={form.discussion} onChange={(e) => setForm({ ...form, discussion: e.target.value })} className={textareaClass} /></Field>
-          <Field label="Imagem fake"><select value={form.image} onChange={(e) => setForm({ ...form, image: e.target.value })} className={inputClass}>{['mama', 'gineco', 'vascular', 'tireoide', 'pocus', 'partes'].map((item) => <option key={item}>{item}</option>)}</select></Field>
+          <Field label="Imagem/capa"><select value={form.image} onChange={(e) => setForm({ ...form, image: e.target.value })} className={inputClass}>{['mama', 'gineco', 'vascular', 'tireoide', 'pocus', 'partes'].map((item) => <option key={item}>{item}</option>)}</select></Field>
           <Field label="Status"><select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as CaseStudy['status'] })} className={inputClass}><option>rascunho</option><option>publicado</option></select></Field>
           <button className="h-12 rounded-2xl bg-sky-950 font-black text-white">Criar caso</button>
         </div>
@@ -3241,6 +4182,7 @@ function AdminSettingsPage() {
     email: 'suporte@unezus.com.br',
     welcome: 'Bem-vindo à experiência de educação continuada da UNEZUS.',
     maintenance: false,
+    instagram: '@unezus',
   })
 
   return (
@@ -3253,11 +4195,12 @@ function AdminSettingsPage() {
           <Field label="Cor principal"><input type="color" value={settings.primaryColor} onChange={(e) => setSettings({ ...settings, primaryColor: e.target.value })} className="h-11 w-full rounded-2xl border border-slate-200 p-1" /></Field>
           <Field label="WhatsApp de suporte"><input value={settings.whatsapp} onChange={(e) => setSettings({ ...settings, whatsapp: e.target.value })} className={inputClass} /></Field>
           <Field label="E-mail de suporte"><input value={settings.email} onChange={(e) => setSettings({ ...settings, email: e.target.value })} className={inputClass} /></Field>
-          <Field label="Modo manutenção fake">
+          <Field label="Modo manutenção">
             <button onClick={() => setSettings({ ...settings, maintenance: !settings.maintenance })} className={clsx('h-11 w-full rounded-2xl text-sm font-black', settings.maintenance ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800')} type="button">
               {settings.maintenance ? 'Manutenção ligada' : 'Manutenção desligada'}
             </button>
           </Field>
+          <Field label="Instagram"><input value={settings.instagram} onChange={(e) => setSettings({ ...settings, instagram: e.target.value })} className={inputClass} /></Field>
           <div className="md:col-span-2">
             <Field label="Texto de boas-vindas"><textarea rows={5} value={settings.welcome} onChange={(e) => setSettings({ ...settings, welcome: e.target.value })} className={textareaClass} /></Field>
           </div>

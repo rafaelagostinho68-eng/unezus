@@ -2,6 +2,8 @@ export type LessonStatus = 'novo' | 'em andamento' | 'concluido' | 'em breve'
 export type AdminStatus = 'publicada' | 'rascunho' | 'em breve'
 export type Level = 'básico' | 'intermediário' | 'avançado'
 export type VideoSource = 'youtube' | 'upload' | 'placeholder'
+export type AccessAudience = 'todos' | 'pagantes'
+export type AccessMode = 'gratuita' | 'inclusa' | 'avulsa'
 
 export type Teacher = {
   id: string
@@ -26,13 +28,16 @@ export type Specialty = {
   color: string
   order: number
   status: 'ativo' | 'inativo'
+  accessMode?: AccessMode
+  accessAudience?: AccessAudience
+  accessPrice?: string
   teacherIds: string[]
 }
 
 export type Material = {
   id: string
   title: string
-  type: 'Mapa mental' | 'PDF complementar' | 'Modelo de laudo' | 'Checklist prático' | 'Resumo ilustrado'
+  type: 'Mapa mental' | 'PDF complementar' | 'Modelo de laudo' | 'Checklist prático' | 'Resumo ilustrado' | 'Arquivo complementar'
 }
 
 export type Lesson = {
@@ -58,6 +63,12 @@ export type Lesson = {
   videoSource?: VideoSource
   videoAssetId?: string
   videoAssetName?: string
+  coverImage?: string
+  quizTitle?: string
+  quizQuestions?: string[]
+  accessMode?: AccessMode | 'herdar'
+  accessAudience?: AccessAudience
+  accessPrice?: string
 }
 
 export type ReportTemplate = {
@@ -180,43 +191,43 @@ export const teachers: Teacher[] = [
     lessonIds: ['endometriose-profunda', 'morfo-primeiro-trimestre', 'doppler-obstetrico'],
   },
   {
-    id: 'fabio-magalhaes',
-    name: 'Dr. Fábio Magalhães',
-    title: 'Radiologista dedicado à imagem mamária',
-    crm: 'CRM 22110-PE',
-    bio: 'Professor convidado em imagem mamária, BI-RADS e correlação clínico-radiológica em ambulatórios especializados.',
-    avatar: 'FM',
-    specialties: ['Mama'],
+    id: 'guilherme-porto',
+    name: 'Dr. Guilherme Porto',
+    title: 'Médico com atuação em ultrassonografia e medicina fetal',
+    crm: '',
+    bio: 'Médico com atuação nas áreas de ultrassonografia e medicina fetal, com experiência voltada ao diagnóstico por imagem em saúde materno-fetal.',
+    avatar: 'GP',
+    specialties: ['Mama', 'Ginecologia e Obstetrícia'],
     lessonIds: ['birads-mamaria'],
   },
   {
-    id: 'sofia-cartacho',
-    name: 'Dra. Sofia Cartacho',
-    title: 'Endocrinologista e ultrassonografista',
-    crm: 'CRM 16572-RN',
-    bio: 'Pesquisa nódulos tireoidianos, estratificação de risco e integração com condutas endocrinológicas.',
-    avatar: 'SC',
-    specialties: ['Tireoide', 'Medicina Interna'],
+    id: 'isaac-newton-guimaraes',
+    name: 'Dr. Isaac Newton Guimarães',
+    title: 'Cirurgião com atuação acadêmica e clínica',
+    crm: '',
+    bio: 'Mestre e Doutor em Cirurgia, com experiência clínica e acadêmica voltada para formação médica e aplicações guiadas por imagem.',
+    avatar: 'IG',
+    specialties: ['Tireoide', 'Partes Moles', 'Medicina Interna'],
     lessonIds: ['tireoide-nodulos'],
   },
   {
-    id: 'rafael-lima',
-    name: 'Dr. Rafael Lima',
-    title: 'Médico emergencista e instrutor POCUS',
-    crm: 'CRM 30881-BA',
-    bio: 'Focado em ultrassom point-of-care, protocolos no atendimento inicial e tomada de decisão à beira-leito.',
-    avatar: 'RL',
+    id: 'armando-mendes',
+    name: 'Dr. Armando Mendes',
+    title: 'Médico anestesiologista com experiência em ultrassom guiado',
+    crm: '',
+    bio: 'Médico anestesiologista com atuação em emergência e procedimentos guiados por ultrassonografia, com participação ativa em jornadas científicas da especialidade.',
+    avatar: 'AM',
     specialties: ['POCUS', 'Doppler'],
     lessonIds: ['pocus-atendimento'],
   },
   {
-    id: 'marina-costa',
-    name: 'Dra. Marina Costa',
-    title: 'Radiologista músculo-esquelética',
-    crm: 'CRM 24780-SP',
-    bio: 'Desenvolve trilhas em partes moles, lesões superficiais e documentação de achados para laudos consistentes.',
-    avatar: 'MC',
-    specialties: ['Partes Moles', 'Mama'],
+    id: 'melissa-diesel',
+    name: 'Dra. Melissa Diesel',
+    title: 'Ginecologista e obstetra com formação em medicina fetal',
+    crm: '',
+    bio: 'Especialista em ginecologia, obstetrícia e ultrassom, com formação em medicina fetal e experiência em ensino médico continuado.',
+    avatar: 'MD',
+    specialties: ['Partes Moles', 'Mama', 'Ginecologia e Obstetrícia'],
     lessonIds: ['partes-moles'],
   },
 ]
@@ -387,7 +398,7 @@ export const lessons: Lesson[] = [
     title: 'BI-RADS na Ultrassonografia Mamária',
     description:
       'Uso prático do léxico BI-RADS, categorização de lesões e comunicação objetiva com mastologia.',
-    teacherId: 'fabio-magalhaes',
+    teacherId: 'guilherme-porto',
     specialtySlug: 'mama',
     module: 'Módulo 01 - Imagem mamária',
     duration: '51 min',
@@ -470,7 +481,7 @@ export const lessons: Lesson[] = [
     title: 'Tireoide: Nódulos e Classificação',
     description:
       'Estratificação de risco, padrões ecográficos, Doppler, seguimento e comunicação com endocrinologia.',
-    teacherId: 'sofia-cartacho',
+    teacherId: 'isaac-newton-guimaraes',
     specialtySlug: 'tireoide',
     module: 'Módulo 01 - Nódulos',
     duration: '49 min',
@@ -526,7 +537,7 @@ export const lessons: Lesson[] = [
     title: 'POCUS no Atendimento Inicial',
     description:
       'Aplicação rápida de FAST, pulmão, avaliação cardíaca básica e integração com sinais clínicos.',
-    teacherId: 'rafael-lima',
+    teacherId: 'armando-mendes',
     specialtySlug: 'pocus',
     module: 'Módulo 01 - Emergência',
     duration: '46 min',
@@ -631,7 +642,7 @@ export const lessons: Lesson[] = [
     title: 'Lesões de Partes Moles',
     description:
       'Avaliação de lipomas, coleções, hérnias superficiais, corpos estranhos e documentação anatômica.',
-    teacherId: 'marina-costa',
+    teacherId: 'melissa-diesel',
     specialtySlug: 'partes-moles',
     module: 'Módulo 01 - Superficial',
     duration: '41 min',
@@ -835,7 +846,7 @@ export const calendarEvents: CalendarEvent[] = [
     title: 'Live: erros frequentes em BI-RADS',
     date: '2026-05-21',
     type: 'Live',
-    teacherId: 'fabio-magalhaes',
+    teacherId: 'guilherme-porto',
     lessonId: 'birads-mamaria',
     description: 'Discussão ao vivo com casos reais anonimizados e perguntas da turma.',
   },
@@ -877,7 +888,7 @@ export const students: Student[] = [
   {
     id: 'rafael-lima-aluno',
     name: 'Dr. Rafael Lima',
-    email: 'rafael.lima@clinicafake.com',
+    email: 'rafael.lima@aluno.unezus.com.br',
     status: 'ativo',
     plan: 'Acesso vitalício',
     progress: 92,
@@ -891,7 +902,7 @@ export const students: Student[] = [
   {
     id: 'marina-costa-aluna',
     name: 'Dra. Marina Costa',
-    email: 'marina.costa@imagemfake.com',
+    email: 'marina.costa@aluno.unezus.com.br',
     status: 'ativo',
     plan: 'Assinatura mensal',
     progress: 78,
@@ -905,7 +916,7 @@ export const students: Student[] = [
   {
     id: 'joao-mendes',
     name: 'Dr. João Mendes',
-    email: 'joao.mendes@unezusdemo.com',
+    email: 'joao.mendes@aluno.unezus.com.br',
     status: 'ativo',
     plan: 'Turma presencial',
     progress: 64,
@@ -919,7 +930,7 @@ export const students: Student[] = [
   {
     id: 'ana-beatriz',
     name: 'Dra. Ana Beatriz Rocha',
-    email: 'ana.rocha@demo.com',
+    email: 'ana.rocha@aluno.unezus.com.br',
     status: 'ativo',
     plan: 'Aluno individual',
     progress: 58,
@@ -933,7 +944,7 @@ export const students: Student[] = [
   {
     id: 'carlos-neves',
     name: 'Dr. Carlos Neves',
-    email: 'carlos.neves@demo.com',
+    email: 'carlos.neves@aluno.unezus.com.br',
     status: 'inativo',
     plan: 'Assinatura mensal',
     progress: 22,
@@ -979,7 +990,7 @@ export const lessonComments: LessonComment[] = [
   {
     id: 'comment-2',
     lessonId: 'birads-mamaria',
-    author: 'Dr. Fábio Magalhães',
+    author: 'Dr. Guilherme Porto',
     role: 'professor',
     status: 'respondido',
     date: 'há 1 dia',
@@ -998,7 +1009,7 @@ export const lessonComments: LessonComment[] = [
   {
     id: 'comment-4',
     lessonId: 'endometriose-profunda',
-    author: 'Dra. Marina Costa',
+    author: 'Dra. Ana Beatriz Rocha',
     role: 'aluno',
     status: 'pendente',
     date: 'há 3 horas',
@@ -1019,7 +1030,7 @@ export const lessonComments: LessonComment[] = [
 export const certificates: Certificate[] = [
   {
     id: 'cert-doppler',
-    title: 'Certificado - Doppler Essencial e Aplicado',
+    title: 'Doppler Essencial e Aplicado',
     module: 'Trilha Doppler',
     specialtySlug: 'doppler',
     teacherId: 'antonio-gadelha',
@@ -1031,10 +1042,10 @@ export const certificates: Certificate[] = [
   },
   {
     id: 'cert-birads',
-    title: 'Certificado - BI-RADS Aplicado à Prática',
+    title: 'BI-RADS Aplicado à Prática',
     module: 'Imagem Mamária',
     specialtySlug: 'mama',
-    teacherId: 'fabio-magalhaes',
+    teacherId: 'guilherme-porto',
     status: 'disponível',
     progress: 100,
     hours: '8 horas',
@@ -1044,10 +1055,10 @@ export const certificates: Certificate[] = [
   },
   {
     id: 'cert-pocus',
-    title: 'Certificado - POCUS no Atendimento Inicial',
+    title: 'POCUS no Atendimento Inicial',
     module: 'POCUS e Emergência',
     specialtySlug: 'pocus',
-    teacherId: 'rafael-lima',
+    teacherId: 'armando-mendes',
     status: 'em andamento',
     progress: 40,
     hours: '10 horas',
