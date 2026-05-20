@@ -4,6 +4,16 @@ export type Level = 'básico' | 'intermediário' | 'avançado'
 export type VideoSource = 'youtube' | 'upload' | 'placeholder'
 export type AccessAudience = 'todos' | 'pagantes'
 export type AccessMode = 'gratuita' | 'inclusa' | 'avulsa'
+export type QuizQuestionType = 'multipla-escolha' | 'verdadeiro-falso'
+
+export type QuizQuestion = {
+  id: string
+  prompt: string
+  type: QuizQuestionType
+  options: string[]
+  correctAnswer: number
+  explanation?: string
+}
 
 export type Teacher = {
   id: string
@@ -65,7 +75,7 @@ export type Lesson = {
   videoAssetName?: string
   coverImage?: string
   quizTitle?: string
-  quizQuestions?: string[]
+  quizQuestions?: Array<QuizQuestion | string>
   accessMode?: AccessMode | 'herdar'
   accessAudience?: AccessAudience
   accessPrice?: string
@@ -365,6 +375,33 @@ export const lessons: Lesson[] = [
       { id: 'm1', title: 'Mapa mental de ajustes Doppler', type: 'Mapa mental' },
       { id: 'm2', title: 'Checklist prático de espectro', type: 'Checklist prático' },
       { id: 'm3', title: 'Resumo ilustrado de padrões de fluxo', type: 'Resumo ilustrado' },
+    ],
+    quizTitle: 'Quiz final - Fundamentos do Doppler',
+    quizQuestions: [
+      {
+        id: 'quiz-doppler-1',
+        prompt: 'Quando o PRF está muito baixo em relação à velocidade do fluxo, o aliasing tende a aparecer com mais facilidade.',
+        type: 'verdadeiro-falso',
+        options: ['Verdadeiro', 'Falso'],
+        correctAnswer: 0,
+        explanation: 'PRF baixo demais reduz a escala de velocidade e favorece aliasing em fluxos mais rápidos.',
+      },
+      {
+        id: 'quiz-doppler-2',
+        prompt: 'Qual ajuste ajuda a reduzir aliasing em um espectro Doppler arterial?',
+        type: 'multipla-escolha',
+        options: ['Diminuir ainda mais o PRF', 'Aumentar o PRF/escala', 'Fechar totalmente o ganho', 'Retirar o cursor do vaso'],
+        correctAnswer: 1,
+        explanation: 'Na prática, aumentar o PRF ou a escala costuma ser uma das primeiras medidas para controlar aliasing.',
+      },
+      {
+        id: 'quiz-doppler-3',
+        prompt: 'O ângulo de insonação deve ser corrigido e, idealmente, mantido dentro de um intervalo técnico adequado para não distorcer a velocidade medida.',
+        type: 'verdadeiro-falso',
+        options: ['Verdadeiro', 'Falso'],
+        correctAnswer: 0,
+        explanation: 'Sem correção angular adequada, a medida de velocidade perde confiabilidade e pode induzir erro de interpretação.',
+      },
     ],
     learning: [
       'Configurar ganho, escala e filtro de parede com segurança',
@@ -900,6 +937,21 @@ export const calendarEvents: CalendarEvent[] = [
     date: '2026-05-31',
     type: 'Prazo de certificado',
     description: 'Concluir as aulas do módulo para liberar o certificado digital.',
+  },
+  {
+    id: 'ev-7',
+    title: 'WEBINAR-US - Doppler de Carótidas',
+    date: '2026-06-01',
+    time: '19:30',
+    type: 'Live',
+    teacherId: 'antonio-gadelha',
+    coordinatorId: 'antonio-gadelha',
+    guestNames: ['Prof. Dr. Antônio Gadelha'],
+    lessonId: 'doppler-carotidas',
+    platform: 'Zoom',
+    liveLink: 'https://us06web.zoom.us/j/89936526671?pwd=ueJESPzVKh5lFfwihaDUb50iNcEvs6.1',
+    accessMode: 'gratuita',
+    description: 'Webinar ao vivo sobre Doppler de carótidas, das indicações ao laudo ecográfico, com entrada imediata pelo link do Zoom.',
   },
 ]
 

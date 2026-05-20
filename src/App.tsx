@@ -25,6 +25,8 @@ import {
   type LessonComment,
   type LessonStatus,
   type Material,
+  type QuizQuestion,
+  type QuizQuestionType,
   type ReportTemplate,
   type Specialty,
   type Student,
@@ -178,6 +180,7 @@ function normalizeLessonAccess(lesson: Lesson): Lesson {
     accessMode: lesson.accessMode ?? 'herdar',
     accessAudience: lesson.accessAudience ?? 'pagantes',
     accessPrice: lesson.accessPrice ?? '',
+    quizQuestions: normalizeLessonQuizQuestions(lesson.quizQuestions),
   }
 }
 
@@ -236,6 +239,40 @@ function getEventAccessSummary(event: CalendarEvent) {
   if (event.accessMode === 'avulsa') return `Ingresso avulso${event.accessPrice ? ` · ${event.accessPrice}` : ''}`
   if (event.accessMode === 'inclusa') return 'Exclusiva para alunos'
   return 'Acesso pela plataforma'
+}
+
+function createEmptyQuizQuestion(type: QuizQuestionType = 'verdadeiro-falso'): QuizQuestion {
+  return {
+    id: `quiz-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    prompt: '',
+    type,
+    options: type === 'verdadeiro-falso' ? ['Verdadeiro', 'Falso'] : ['', '', '', ''],
+    correctAnswer: 0,
+    explanation: '',
+  }
+}
+
+function normalizeLessonQuizQuestions(questions?: Array<QuizQuestion | string>) {
+  if (!questions?.length) return [] as QuizQuestion[]
+  return questions.map((question, index) => {
+    if (typeof question === 'string') {
+      return {
+        id: `quiz-legacy-${index}`,
+        prompt: question,
+        type: 'verdadeiro-falso' as QuizQuestionType,
+        options: ['Verdadeiro', 'Falso'],
+        correctAnswer: 0,
+        explanation: '',
+      }
+    }
+    const fallbackOptions = question.type === 'verdadeiro-falso' ? ['Verdadeiro', 'Falso'] : ['', '', '', '']
+    return {
+      ...question,
+      id: question.id || `quiz-${index}`,
+      options: question.options?.length ? question.options : fallbackOptions,
+      correctAnswer: Number.isFinite(question.correctAnswer) ? question.correctAnswer : 0,
+    }
+  })
 }
 
 function isLessonReleased(lesson: Lesson) {
@@ -2266,8 +2303,11 @@ function LessonPage() {
   const { lessons, setLessons, certificates, setCertificates, teachers, specialties, reports, comments, setComments, completedLessonIds, setCompletedLessonIds } = useData()
   const lesson = lessons.find((item) => item.id === id)
   const [message, setMessage] = useState('')
+  const [quizAnswers, setQuizAnswers] = useState<Record<string, number>>({})
+  const [quizSubmitted, setQuizSubmitted] = useState(false)
+  const role = typeof window !== 'undefined' ? window.localStorage.getItem(`${storagePrefix}:role`) : null
 
-  if (!lesson || !isLessonVisibleToStudent(lesson)) return <Navigate to="/app" replace />
+  if (!lesson || (role !== 'admin' && !isLessonVisibleToStudent(lesson))) return <Navigate to="/app" replace />
 
   const teacher = getTeacher(lesson.teacherId, teachers)
   const specialty = getSpecialty(lesson.specialtySlug, specialties)
@@ -2276,6 +2316,16 @@ function LessonPage() {
   const progress = getLessonProgress(lesson, completedLessonIds)
   const status = getLessonStatus(lesson, completedLessonIds)
   const locked = isLessonLocked(lesson)
+  const normalizedQuizQuestions = useMemo(() => normalizeLessonQuizQuestions(lesson.quizQuestions), [lesson.quizQuestions])
+  const answeredCount = normalizedQuizQuestions.filter((question) => quizAnswers[question.id] !== undefined).length
+  const correctCount = normalizedQuizQuestions.reduce((total, question) => (quizAnswers[question.id] === question.correctAnswer ? total + 1 : total), 0)
+  const scorePercent = normalizedQuizQuestions.length ? Math.round((correctCount / normalizedQuizQuestions.length) * 100) : 0
+  const quizPassed = scorePercent >= 70
+
+  useEffect(() => {
+    setQuizAnswers({})
+    setQuizSubmitted(false)
+  }, [lesson.id])
 
   const completeLesson = () => {
     if (locked) return
@@ -2313,6 +2363,16 @@ function LessonPage() {
       },
     ])
     setMessage('')
+  }
+
+  const submitQuiz = () => {
+    if (answeredCount !== normalizedQuizQuestions.length) return
+    setQuizSubmitted(true)
+  }
+
+  const resetQuiz = () => {
+    setQuizAnswers({})
+    setQuizSubmitted(false)
   }
 
   return (
@@ -2405,16 +2465,89 @@ function LessonPage() {
           </div>
         </section>
 
-        {lesson.quizQuestions?.length ? (
+        {!locked && normalizedQuizQuestions.length ? (
           <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
             <SectionTitle title={lesson.quizTitle || 'Quiz da aula'} />
-            <div className="grid gap-3">
-              {lesson.quizQuestions.map((question, index) => (
-                <div key={`${lesson.id}-quiz-${index}`} className="rounded-2xl bg-slate-50 p-4">
-                  <p className="text-sm font-black text-slate-950">Pergunta {index + 1}</p>
-                  <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{question}</p>
+            <div className="grid gap-4">
+              {normalizedQuizQuestions.map((question, index) => (
+                <div key={question.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-black text-slate-950">Pergunta {index + 1}</p>
+                      <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{question.prompt}</p>
+                    </div>
+                    <Badge tone="slate">{question.type === 'verdadeiro-falso' ? 'Verdadeiro/Falso' : 'Múltipla escolha'}</Badge>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {question.options.map((option, optionIndex) => {
+                      if (!option.trim()) return null
+                      const selected = quizAnswers[question.id] === optionIndex
+                      const isCorrect = question.correctAnswer === optionIndex
+                      return (
+                        <label
+                          key={`${question.id}-${optionIndex}`}
+                          className={clsx(
+                            'flex cursor-pointer items-center gap-3 rounded-2xl border px-4 py-3 text-sm font-semibold transition',
+                            selected ? 'border-sky-300 bg-sky-50 text-sky-950' : 'border-slate-200 bg-white text-slate-700',
+                            quizSubmitted && isCorrect && 'border-emerald-300 bg-emerald-50 text-emerald-900',
+                            quizSubmitted && selected && !isCorrect && 'border-rose-300 bg-rose-50 text-rose-900',
+                          )}
+                        >
+                          <input
+                            type="radio"
+                            name={`quiz-${question.id}`}
+                            checked={selected}
+                            disabled={quizSubmitted}
+                            onChange={() => setQuizAnswers((current) => ({ ...current, [question.id]: optionIndex }))}
+                            className="h-4 w-4 accent-sky-700"
+                          />
+                          <span className="flex-1">{option}</span>
+                          {quizSubmitted && isCorrect ? <Icons.CheckCircle2 className="h-4 w-4 text-emerald-600" /> : null}
+                        </label>
+                      )
+                    })}
+                  </div>
+                  {quizSubmitted && question.explanation ? (
+                    <div className="mt-3 rounded-2xl bg-white px-4 py-3 text-sm font-semibold leading-6 text-slate-600 ring-1 ring-slate-200">
+                      <span className="font-black text-slate-950">Comentário:</span> {question.explanation}
+                    </div>
+                  ) : null}
                 </div>
               ))}
+            </div>
+            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              {quizSubmitted ? (
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-black text-slate-950">Resultado do quiz</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-600">
+                      Você acertou {correctCount} de {normalizedQuizQuestions.length} perguntas · nota {scorePercent}% · {quizPassed ? 'aprovado' : 'refaça o teste'}
+                    </p>
+                  </div>
+                  <button onClick={resetQuiz} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700">
+                    Refazer quiz
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-black text-slate-950">Pronto para corrigir?</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-600">
+                      Responda todas as perguntas para ver a nota final. Você pode refazer quantas vezes quiser.
+                    </p>
+                  </div>
+                  <button
+                    onClick={submitQuiz}
+                    disabled={answeredCount !== normalizedQuizQuestions.length}
+                    className={clsx(
+                      'rounded-2xl px-4 py-3 text-sm font-black',
+                      answeredCount === normalizedQuizQuestions.length ? 'bg-sky-950 text-white' : 'cursor-not-allowed bg-slate-200 text-slate-500',
+                    )}
+                  >
+                    Corrigir quiz
+                  </button>
+                </div>
+              )}
             </div>
           </section>
         ) : null}
@@ -3144,6 +3277,7 @@ function AdminLessonsPage() {
   const [feedback, setFeedback] = useState('')
   const [youtubePreview, setYoutubePreview] = useState<YouTubeImportPreview | null>(null)
   const [youtubeImporting, setYoutubeImporting] = useState(false)
+  const [quizItems, setQuizItems] = useState<QuizQuestion[]>([])
   const lastImportedVideoRef = useRef('')
   const [form, setForm] = useState({
     title: '',
@@ -3162,7 +3296,6 @@ function AdminLessonsPage() {
     coverImage: '',
     materials: 'Mapa mental, PDF complementar',
     quizTitle: '',
-    quizQuestions: '',
     accessMode: 'herdar' as AccessMode | 'herdar',
     accessAudience: 'pagantes' as AccessAudience,
     accessPrice: '',
@@ -3173,6 +3306,7 @@ function AdminLessonsPage() {
     setSelectedVideoFile(null)
     setSelectedMaterialFiles([])
     setYoutubePreview(null)
+    setQuizItems([])
     lastImportedVideoRef.current = ''
     setForm({
       title: '',
@@ -3189,13 +3323,33 @@ function AdminLessonsPage() {
       videoAssetName: '',
       thumbnail: 'doppler',
       coverImage: '',
-        materials: 'Mapa mental, PDF complementar',
-        quizTitle: '',
-        quizQuestions: '',
-        accessMode: 'herdar',
-        accessAudience: 'pagantes',
-        accessPrice: '',
+      materials: 'Mapa mental, PDF complementar',
+      quizTitle: '',
+      accessMode: 'herdar',
+      accessAudience: 'pagantes',
+      accessPrice: '',
       })
+  }
+
+  const addQuizItem = (type: QuizQuestionType = 'verdadeiro-falso') => {
+    setQuizItems((current) => [...current, createEmptyQuizQuestion(type)])
+  }
+
+  const updateQuizItem = (questionId: string, updater: (item: QuizQuestion) => QuizQuestion) => {
+    setQuizItems((current) => current.map((item) => (item.id === questionId ? updater(item) : item)))
+  }
+
+  const changeQuizType = (questionId: string, type: QuizQuestionType) => {
+    updateQuizItem(questionId, (item) => ({
+      ...item,
+      type,
+      options: type === 'verdadeiro-falso' ? ['Verdadeiro', 'Falso'] : item.type === 'multipla-escolha' ? item.options : ['', '', '', ''],
+      correctAnswer: 0,
+    }))
+  }
+
+  const removeQuizItem = (questionId: string) => {
+    setQuizItems((current) => current.filter((item) => item.id !== questionId))
   }
 
   useEffect(() => {
@@ -3312,7 +3466,20 @@ function AdminLessonsPage() {
       ),
       learning: ['Objetivo prático da aula', 'Principais achados e armadilhas', 'Aplicação no laudo e na conduta'],
       quizTitle: form.quizTitle.trim() || undefined,
-      quizQuestions: form.quizQuestions.split('\n').map((item) => item.trim()).filter(Boolean),
+      quizQuestions: quizItems
+        .map((item) => ({
+          ...item,
+          prompt: item.prompt.trim(),
+          options: item.type === 'verdadeiro-falso' ? ['Verdadeiro', 'Falso'] : item.options.map((option) => option.trim()),
+          correctAnswer:
+            item.type === 'verdadeiro-falso'
+              ? item.correctAnswer
+              : (item.options.map((option) => option.trim())[item.correctAnswer]
+                  ? item.correctAnswer
+                  : Math.max(0, item.options.map((option) => option.trim()).findIndex(Boolean))),
+          explanation: item.explanation?.trim() || undefined,
+        }))
+        .filter((item) => item.prompt && (item.type === 'verdadeiro-falso' || item.options.filter(Boolean).length >= 2)),
       accessMode: form.accessMode,
       accessAudience: form.accessAudience,
       accessPrice: form.accessPrice.trim(),
@@ -3331,6 +3498,7 @@ function AdminLessonsPage() {
     setSelectedVideoFile(null)
     setSelectedMaterialFiles([])
     setYoutubePreview(null)
+    setQuizItems(normalizeLessonQuizQuestions(lesson.quizQuestions))
     lastImportedVideoRef.current = getYouTubeId(lesson.videoUrl) ? `${getYouTubeId(lesson.videoUrl)}-${lesson.specialtySlug}` : ''
     setForm({
       title: lesson.title,
@@ -3349,7 +3517,6 @@ function AdminLessonsPage() {
       coverImage: lesson.coverImage ?? '',
       materials: lesson.materials.map((material) => material.title).join(', '),
       quizTitle: lesson.quizTitle ?? '',
-      quizQuestions: (lesson.quizQuestions ?? []).join('\n'),
       accessMode: lesson.accessMode ?? 'herdar',
       accessAudience: lesson.accessAudience ?? 'pagantes',
       accessPrice: lesson.accessPrice ?? '',
@@ -3535,13 +3702,94 @@ function AdminLessonsPage() {
             <Field label="Materiais listados"><input value={form.materials} onChange={(e) => setForm({ ...form, materials: e.target.value })} className={inputClass} /></Field>
             <Field label="Quiz da aula (opcional)">
               <input value={form.quizTitle} onChange={(e) => setForm({ ...form, quizTitle: e.target.value })} className={inputClass} placeholder="Quiz rápido: fundamentos da aula" />
-              <textarea
-                rows={4}
-                value={form.quizQuestions}
-                onChange={(e) => setForm({ ...form, quizQuestions: e.target.value })}
-                className={clsx(textareaClass, 'mt-3')}
-                placeholder={'Uma pergunta por linha\nEx.: Qual ajuste reduz aliasing no Doppler?\nEx.: Quando subir um BI-RADS?'}
-              />
+              <div className="mt-3 space-y-3">
+                {quizItems.length ? (
+                  quizItems.map((item, index) => (
+                    <div key={item.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-sm font-black text-slate-950">Pergunta {index + 1}</p>
+                        <div className="flex gap-2">
+                          <select value={item.type} onChange={(e) => changeQuizType(item.id, e.target.value as QuizQuestionType)} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700">
+                            <option value="verdadeiro-falso">Verdadeiro/Falso</option>
+                            <option value="multipla-escolha">Múltipla escolha</option>
+                          </select>
+                          <button type="button" onClick={() => removeQuizItem(item.id)} className="rounded-xl bg-red-50 px-3 py-2 text-xs font-black text-red-700">
+                            Remover
+                          </button>
+                        </div>
+                      </div>
+                      <div className="mt-3 space-y-3">
+                        <input
+                          value={item.prompt}
+                          onChange={(e) => updateQuizItem(item.id, (current) => ({ ...current, prompt: e.target.value }))}
+                          className={inputClass}
+                          placeholder="Digite a pergunta"
+                        />
+                        {item.type === 'multipla-escolha' ? (
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            {item.options.map((option, optionIndex) => (
+                              <input
+                                key={`${item.id}-option-${optionIndex}`}
+                                value={option}
+                                onChange={(e) =>
+                                  updateQuizItem(item.id, (current) => ({
+                                    ...current,
+                                    options: current.options.map((currentOption, currentIndex) => (currentIndex === optionIndex ? e.target.value : currentOption)),
+                                  }))
+                                }
+                                className={inputClass}
+                                placeholder={`Opção ${optionIndex + 1}`}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700">Verdadeiro</div>
+                            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700">Falso</div>
+                          </div>
+                        )}
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <Field label="Resposta correta">
+                            <select
+                              value={item.correctAnswer}
+                              onChange={(e) => updateQuizItem(item.id, (current) => ({ ...current, correctAnswer: Number(e.target.value) }))}
+                              className={inputClass}
+                            >
+                              {(item.type === 'verdadeiro-falso' ? item.options : item.options.map((option) => option.trim())).map((option, optionIndex) => (
+                                <option key={`${item.id}-answer-${optionIndex}`} value={optionIndex} disabled={item.type === 'multipla-escolha' && !option}>
+                                  {option || `Opção ${optionIndex + 1}`}
+                                </option>
+                              ))}
+                            </select>
+                          </Field>
+                          <Field label="Nota mínima">
+                            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700">70% para aprovação</div>
+                          </Field>
+                        </div>
+                        <textarea
+                          rows={3}
+                          value={item.explanation ?? ''}
+                          onChange={(e) => updateQuizItem(item.id, (current) => ({ ...current, explanation: e.target.value }))}
+                          className={textareaClass}
+                          placeholder="Feedback opcional para aparecer depois da correção"
+                        />
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm font-semibold text-slate-500">
+                    Adicione perguntas para o aluno responder no final da aula. Depois o sistema mostra a nota e permite refazer.
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => addQuizItem('verdadeiro-falso')} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700">
+                    + Verdadeiro/Falso
+                  </button>
+                  <button type="button" onClick={() => addQuizItem('multipla-escolha')} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700">
+                    + Múltipla escolha
+                  </button>
+                </div>
+              </div>
             </Field>
             {feedback && <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700">{feedback}</div>}
             <button className="h-12 rounded-2xl bg-sky-950 font-black text-white">{editingId ? 'Salvar edição' : 'Criar aula'}</button>
@@ -3565,6 +3813,9 @@ function AdminLessonsPage() {
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    <Link to={`/app/aulas/${lesson.id}`} className="rounded-xl bg-sky-50 px-3 py-2 text-xs font-black text-sky-700">
+                      Ver
+                    </Link>
                     <button onClick={() => editLesson(lesson)} className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">Editar</button>
                     <button
                       onClick={async () => {
