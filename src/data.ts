@@ -99,9 +99,18 @@ export type CalendarEvent = {
   id: string
   title: string
   date: string
+  time?: string
+  endTime?: string
   type: 'Aula liberada' | 'Live' | 'Encontro presencial' | 'Estudo de caso' | 'Prova/simulado' | 'Prazo de certificado'
   teacherId?: string
+  coordinatorId?: string
+  guestNames?: string[]
   lessonId?: string
+  platform?: 'Zoom' | 'YouTube' | 'Google Meet' | 'Presencial'
+  liveLink?: string
+  image?: string
+  accessMode?: 'gratuita' | 'inclusa' | 'avulsa'
+  accessPrice?: string
   description: string
 }
 
@@ -845,9 +854,16 @@ export const calendarEvents: CalendarEvent[] = [
     id: 'ev-2',
     title: 'Live: erros frequentes em BI-RADS',
     date: '2026-05-21',
+    time: '19:30',
     type: 'Live',
     teacherId: 'guilherme-porto',
+    coordinatorId: 'antonio-gadelha',
+    guestNames: ['Prof. Dr. Antônio Gadelha'],
     lessonId: 'birads-mamaria',
+    platform: 'Zoom',
+    liveLink: 'https://zoom.us/j/82970503125?pwd=487450',
+    image: 'https://images.unsplash.com/photo-1576091160550-2173dba999ef?auto=format&fit=crop&w=1200&q=80',
+    accessMode: 'gratuita',
     description: 'Discussão ao vivo com casos reais anonimizados e perguntas da turma.',
   },
   {
@@ -862,8 +878,11 @@ export const calendarEvents: CalendarEvent[] = [
     id: 'ev-4',
     title: 'Encontro presencial: mão na sonda',
     date: '2026-05-25',
+    time: '08:00',
+    endTime: '17:00',
     type: 'Encontro presencial',
     teacherId: 'antonio-gadelha',
+    platform: 'Presencial',
     description: 'Sessão prática para alunos da turma presencial UNEZUS.',
   },
   {

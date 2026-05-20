@@ -121,6 +121,10 @@ function formatDate(date: string) {
   }).format(new Date(`${date}T12:00:00`))
 }
 
+function formatEventDateTime(date: string, time?: string) {
+  return time ? `${formatDate(date)} · ${time}` : formatDate(date)
+}
+
 function getTodayKey() {
   const today = new Date()
   return getDateKeyFromDate(today)
@@ -147,6 +151,12 @@ function getDateDistance(date: string) {
   const target = new Date(`${date}T12:00:00`).getTime()
   const today = new Date(`${getTodayKey()}T12:00:00`).getTime()
   return Math.round((target - today) / 86400000)
+}
+
+function compareCalendarEvents(a: CalendarEvent, b: CalendarEvent) {
+  const aKey = `${a.date}T${a.time ?? '23:59'}`
+  const bKey = `${b.date}T${b.time ?? '23:59'}`
+  return aKey.localeCompare(bKey)
 }
 
 function getOrderedSpecialties(specialties: Specialty[]) {
@@ -219,6 +229,13 @@ function getLessonAccessSummary(lesson: Lesson, specialties: Specialty[]) {
   if (resolved.mode === 'gratuita') return `Gratuita · ${accessAudienceLabels[resolved.audience]}`
   if (resolved.mode === 'avulsa') return `Compra avulsa${resolved.price ? ` · ${resolved.price}` : ''}`
   return `Inclusa no plano · ${accessAudienceLabels[resolved.audience]}`
+}
+
+function getEventAccessSummary(event: CalendarEvent) {
+  if (event.accessMode === 'gratuita') return 'Acesso gratuito'
+  if (event.accessMode === 'avulsa') return `Ingresso avulso${event.accessPrice ? ` · ${event.accessPrice}` : ''}`
+  if (event.accessMode === 'inclusa') return 'Exclusiva para alunos'
+  return 'Acesso pela plataforma'
 }
 
 function isLessonReleased(lesson: Lesson) {
@@ -2566,7 +2583,7 @@ function CalendarPage() {
                 <p className="mt-1 text-3xl font-black">{new Date(`${featuredEvent.date}T12:00:00`).getDate()}</p>
               </div>
               <div className="space-y-2">
-                <p className="text-sm font-bold text-sky-100">{featuredEvent.type} · {formatDate(featuredEvent.date)}</p>
+                <p className="text-sm font-bold text-sky-100">{featuredEvent.type} · {formatEventDateTime(featuredEvent.date, featuredEvent.time)}</p>
                 <p className="text-sm leading-6 text-sky-50/90">{featuredEvent.description}</p>
                 <p className="text-xs font-black uppercase tracking-[0.16em] text-sky-100">Toque para ver detalhes</p>
               </div>
@@ -2602,7 +2619,7 @@ function CalendarPage() {
                 </span>
                 <span className="min-w-0">
                   <span className="block text-sm font-black text-slate-950">{event.title}</span>
-                  <span className="mt-1 block text-xs font-bold text-slate-500">{event.type} · {formatDate(event.date)}</span>
+                  <span className="mt-1 block text-xs font-bold text-slate-500">{event.type} · {formatEventDateTime(event.date, event.time)}</span>
                   <span className="mt-2 block text-xs leading-5 text-slate-500">{event.description}</span>
                 </span>
               </button>
@@ -2640,7 +2657,7 @@ function CalendarPage() {
                     </span>
                     <span className="min-w-0">
                       <span className="block text-sm font-black text-slate-900">{event.title}</span>
-                      <span className="mt-1 block text-xs font-bold text-slate-500">{event.type} · {formatDate(event.date)}</span>
+                      <span className="mt-1 block text-xs font-bold text-slate-500">{event.type} · {formatEventDateTime(event.date, event.time)}</span>
                     </span>
                   </button>
                 ))}
@@ -2681,15 +2698,36 @@ function CalendarPage() {
       {selected && (
         <Modal onClose={() => setSelected(null)} title={selected.title}>
           <div className="space-y-4">
+            {selected.image ? (
+              <div className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-slate-50">
+                <img src={selected.image} alt={selected.title} className="h-48 w-full object-cover" />
+              </div>
+            ) : null}
             <p className="text-sm leading-6 text-slate-600">{selected.description}</p>
             <div className="grid gap-3 sm:grid-cols-2">
-              <InfoLine label="Data" value={formatDate(selected.date)} />
+              <InfoLine label="Data" value={formatEventDateTime(selected.date, selected.time)} />
               <InfoLine label="Tipo" value={selected.type} />
               <InfoLine label="Professor" value={selected.teacherId ? getTeacher(selected.teacherId, teachers).name : 'Equipe UNEZUS'} />
+              {selected.coordinatorId ? <InfoLine label="Coordenação" value={getTeacher(selected.coordinatorId, teachers).name} /> : null}
+              {selected.platform ? <InfoLine label="Plataforma" value={selected.platform} /> : null}
+              <InfoLine label="Acesso" value={getEventAccessSummary(selected)} />
             </div>
-            <Link to={selected.lessonId ? `/app/aulas/${selected.lessonId}` : '/app'} className="inline-flex rounded-2xl bg-sky-950 px-5 py-3 text-sm font-black text-white">
-              Ver aula
-            </Link>
+            {selected.guestNames?.length ? (
+              <div className="rounded-2xl bg-slate-50 p-4">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Participantes</p>
+                <p className="mt-2 text-sm font-bold leading-6 text-slate-700">{selected.guestNames.join(' · ')}</p>
+              </div>
+            ) : null}
+            <div className="flex flex-wrap gap-3">
+              {selected.liveLink ? (
+                <a href={selected.liveLink} target="_blank" rel="noreferrer" className="inline-flex rounded-2xl bg-sky-950 px-5 py-3 text-sm font-black text-white">
+                  Entrar via {selected.platform ?? 'link'}
+                </a>
+              ) : null}
+              <Link to={selected.lessonId ? `/app/aulas/${selected.lessonId}` : '/app'} className="inline-flex rounded-2xl border border-slate-200 px-5 py-3 text-sm font-black text-slate-700">
+                {selected.lessonId ? 'Ver aula' : 'Voltar para área'}
+              </Link>
+            </div>
           </div>
         </Modal>
       )}
@@ -4020,32 +4058,214 @@ function AdminStudentsPage() {
 
 function AdminCalendarPage() {
   const { events, setEvents, teachers, lessons } = useData()
-  const [form, setForm] = useState({ title: '', date: '2026-06-01', type: 'Aula liberada' as CalendarEvent['type'], teacherId: teachers[0]?.id ?? '', lessonId: '', description: '' })
+  const [editingId, setEditingId] = useState('')
+  const [form, setForm] = useState({
+    title: '',
+    date: '2026-06-01',
+    time: '19:30',
+    endTime: '',
+    type: 'Aula liberada' as CalendarEvent['type'],
+    teacherId: teachers[0]?.id ?? '',
+    coordinatorId: '',
+    guestNames: '',
+    lessonId: '',
+    platform: 'Zoom' as NonNullable<CalendarEvent['platform']>,
+    liveLink: '',
+    image: '',
+    accessMode: 'inclusa' as NonNullable<CalendarEvent['accessMode']>,
+    accessPrice: '',
+    description: '',
+  })
+  const sortedEvents = useMemo(() => {
+    const upcoming = events.filter((item) => getDateDistance(item.date) >= 0).sort(compareCalendarEvents)
+    const past = events.filter((item) => getDateDistance(item.date) < 0).sort((a, b) => compareCalendarEvents(b, a))
+    return [...upcoming, ...past]
+  }, [events])
+
+  const resetForm = () => {
+    setEditingId('')
+    setForm({
+      title: '',
+      date: '2026-06-01',
+      time: '19:30',
+      endTime: '',
+      type: 'Aula liberada',
+      teacherId: teachers[0]?.id ?? '',
+      coordinatorId: '',
+      guestNames: '',
+      lessonId: '',
+      platform: 'Zoom',
+      liveLink: '',
+      image: '',
+      accessMode: 'inclusa',
+      accessPrice: '',
+      description: '',
+    })
+  }
+
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    setEvents((current) => [{ id: `ev-${Date.now()}`, ...form }, ...current])
-    setForm({ ...form, title: '', description: '' })
+    const payload: CalendarEvent = {
+      id: editingId || `ev-${Date.now()}`,
+      title: form.title,
+      date: form.date,
+      time: form.time || undefined,
+      endTime: form.endTime || undefined,
+      type: form.type,
+      teacherId: form.teacherId || undefined,
+      coordinatorId: form.coordinatorId || undefined,
+      guestNames: form.guestNames.split(',').map((item) => item.trim()).filter(Boolean),
+      lessonId: form.lessonId || undefined,
+      platform: form.type === 'Live' || form.type === 'Encontro presencial' ? form.platform : undefined,
+      liveLink: form.type === 'Live' ? form.liveLink || undefined : undefined,
+      image: form.image || undefined,
+      accessMode: form.type === 'Live' ? form.accessMode : undefined,
+      accessPrice: form.type === 'Live' && form.accessMode === 'avulsa' ? form.accessPrice || undefined : undefined,
+      description: form.description,
+    }
+    setEvents((current) =>
+      (editingId ? current.map((item) => (item.id === editingId ? payload : item)) : [payload, ...current]).sort(compareCalendarEvents),
+    )
+    resetForm()
   }
   return (
     <CrudLayout title="Admin - calendário">
       <form onSubmit={submit} className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-xl font-black text-slate-950">Adicionar evento</h2>
+        <h2 className="text-xl font-black text-slate-950">{editingId ? 'Editar evento' : 'Adicionar evento'}</h2>
         <div className="mt-5 grid gap-4">
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-sky-700">Assistente visual</p>
+            <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">
+              Para lives, preencha horário, participantes, imagem de divulgação e link do Zoom. Depois da transmissão, você pode editar este mesmo item e vincular a aula gravada.
+            </p>
+          </div>
           <Field label="Título"><input required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className={inputClass} /></Field>
-          <Field label="Data"><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className={inputClass} /></Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Data"><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className={inputClass} /></Field>
+            <Field label="Hora"><input type="time" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} className={inputClass} /></Field>
+          </div>
           <Field label="Tipo"><select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value as CalendarEvent['type'] })} className={inputClass}>{eventTypes.map((type) => <option key={type}>{type}</option>)}</select></Field>
-          <Field label="Professor"><select value={form.teacherId} onChange={(e) => setForm({ ...form, teacherId: e.target.value })} className={inputClass}>{teachers.map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.name}</option>)}</select></Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label={form.type === 'Live' ? 'Palestrante principal' : 'Professor'}>
+              <select value={form.teacherId} onChange={(e) => setForm({ ...form, teacherId: e.target.value })} className={inputClass}>
+                {teachers.map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.name}</option>)}
+              </select>
+            </Field>
+            <Field label={form.type === 'Live' ? 'Coordenação (opcional)' : 'Responsável extra'}>
+              <select value={form.coordinatorId} onChange={(e) => setForm({ ...form, coordinatorId: e.target.value })} className={inputClass}>
+                <option value="">Sem coordenação extra</option>
+                {teachers.map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.name}</option>)}
+              </select>
+            </Field>
+          </div>
+          {form.type === 'Live' && (
+            <>
+              <Field label="Convidados ou participantes">
+                <input value={form.guestNames} onChange={(e) => setForm({ ...form, guestNames: e.target.value })} className={inputClass} placeholder="Ex.: Prof. Dr. Márcio Piske, Prof. Dr. Coridon Franco" />
+              </Field>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Plataforma">
+                  <select value={form.platform} onChange={(e) => setForm({ ...form, platform: e.target.value as NonNullable<CalendarEvent['platform']> })} className={inputClass}>
+                    {['Zoom', 'YouTube', 'Google Meet', 'Presencial'].map((platform) => <option key={platform}>{platform}</option>)}
+                  </select>
+                </Field>
+                <Field label="Término (opcional)">
+                  <input type="time" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} className={inputClass} />
+                </Field>
+              </div>
+              <Field label="Link de acesso">
+                <input value={form.liveLink} onChange={(e) => setForm({ ...form, liveLink: e.target.value })} className={inputClass} placeholder="https://zoom.us/j/..." />
+              </Field>
+              <Field label="Imagem de divulgação (opcional)">
+                <input value={form.image} onChange={(e) => setForm({ ...form, image: e.target.value })} className={inputClass} placeholder="https://... ou link da arte da live" />
+              </Field>
+              {form.image ? (
+                <div className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-slate-50">
+                  <img src={form.image} alt="Prévia da divulgação da live" className="h-44 w-full object-cover" />
+                </div>
+              ) : null}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Quem pode entrar">
+                  <select value={form.accessMode} onChange={(e) => setForm({ ...form, accessMode: e.target.value as NonNullable<CalendarEvent['accessMode']> })} className={inputClass}>
+                    <option value="gratuita">Gratuita</option>
+                    <option value="inclusa">Exclusiva para alunos</option>
+                    <option value="avulsa">Venda avulsa</option>
+                  </select>
+                </Field>
+                {form.accessMode === 'avulsa' ? (
+                  <Field label="Valor da live">
+                    <input value={form.accessPrice} onChange={(e) => setForm({ ...form, accessPrice: e.target.value })} className={inputClass} placeholder="R$ 49,00" />
+                  </Field>
+                ) : (
+                  <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
+                    {form.accessMode === 'gratuita' ? 'Essa live pode aparecer para todo cadastrado.' : 'Essa live fica liberada apenas para quem já faz parte da plataforma.'}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
           <Field label="Aula vinculada"><select value={form.lessonId} onChange={(e) => setForm({ ...form, lessonId: e.target.value })} className={inputClass}><option value="">Sem aula</option>{lessons.map((lesson) => <option key={lesson.id} value={lesson.id}>{lesson.title}</option>)}</select></Field>
           <Field label="Descrição"><textarea rows={4} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className={textareaClass} /></Field>
-          <button className="h-12 rounded-2xl bg-sky-950 font-black text-white">Adicionar evento</button>
+          <div className="flex gap-3">
+            <button className="h-12 flex-1 rounded-2xl bg-sky-950 font-black text-white">{editingId ? 'Salvar evento' : 'Adicionar evento'}</button>
+            {editingId ? (
+              <button type="button" onClick={resetForm} className="h-12 rounded-2xl border border-slate-200 px-5 font-black text-slate-700">
+                Cancelar
+              </button>
+            ) : null}
+          </div>
         </div>
       </form>
       <div className="grid gap-3">
-        {events.map((event) => (
+        {sortedEvents.map((event) => (
           <div key={event.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-start justify-between gap-4">
-              <div><p className="font-black text-slate-950">{event.title}</p><p className="text-sm font-semibold text-slate-500">{formatDate(event.date)} · {event.type}</p></div>
-              <button onClick={() => setEvents((current) => current.filter((item) => item.id !== event.id))} className="rounded-xl bg-red-50 px-3 py-2 text-xs font-black text-red-700">Excluir</button>
+              <div className="min-w-0">
+                <div className="flex flex-wrap gap-2">
+                  <StatusBadge status={getDateDistance(event.date) < 0 ? 'concluido' : event.type === 'Live' && getDateDistance(event.date) === 0 ? 'novo' : 'em andamento'} />
+                  {event.type === 'Live' ? <Badge tone="sky">{getEventAccessSummary(event)}</Badge> : null}
+                </div>
+                <p className="mt-2 font-black text-slate-950">{event.title}</p>
+                <p className="text-sm font-semibold text-slate-500">{formatEventDateTime(event.date, event.time)} · {event.type}</p>
+                {event.teacherId ? <p className="mt-2 text-sm font-semibold text-slate-600">{event.type === 'Live' ? 'Palestrante' : 'Responsável'}: {getTeacher(event.teacherId, teachers).name}</p> : null}
+                {event.coordinatorId ? <p className="text-sm font-semibold text-slate-600">Coordenação: {getTeacher(event.coordinatorId, teachers).name}</p> : null}
+                {event.guestNames?.length ? <p className="text-sm font-semibold text-slate-600">Convidados: {event.guestNames.join(' · ')}</p> : null}
+                {event.platform ? <p className="text-sm font-semibold text-slate-600">Plataforma: {event.platform}</p> : null}
+                {event.liveLink ? <p className="mt-1 truncate text-xs font-bold text-sky-700">{event.liveLink}</p> : null}
+              </div>
+              {event.image ? (
+                <div className="hidden h-24 w-28 shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 lg:block">
+                  <img src={event.image} alt={event.title} className="h-full w-full object-cover" />
+                </div>
+              ) : null}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => {
+                    setEditingId(event.id)
+                    setForm({
+                      title: event.title,
+                      date: event.date,
+                      time: event.time ?? '19:30',
+                      endTime: event.endTime ?? '',
+                      type: event.type,
+                      teacherId: event.teacherId ?? teachers[0]?.id ?? '',
+                      coordinatorId: event.coordinatorId ?? '',
+                      guestNames: (event.guestNames ?? []).join(', '),
+                      lessonId: event.lessonId ?? '',
+                      platform: event.platform ?? 'Zoom',
+                      liveLink: event.liveLink ?? '',
+                      image: event.image ?? '',
+                      accessMode: event.accessMode ?? 'inclusa',
+                      accessPrice: event.accessPrice ?? '',
+                      description: event.description,
+                    })
+                  }}
+                  className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700"
+                >
+                  Editar
+                </button>
+                <button onClick={() => setEvents((current) => current.filter((item) => item.id !== event.id))} className="rounded-xl bg-red-50 px-3 py-2 text-xs font-black text-red-700">Excluir</button>
+              </div>
             </div>
           </div>
         ))}
